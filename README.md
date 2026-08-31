@@ -3,6 +3,7 @@
 [![Python 3.12+](https://img.shields.io/badge/-Python_3.12+-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![PyPI - Version](https://img.shields.io/pypi/v/simple-scaling-laws)](https://pypi.org/project/simple-scaling-laws/)
 [![Tests](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/tests.yaml/badge.svg)](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/tests.yaml)
+[![Test Coverage](https://codecov.io/gh/mmcdermott/simple-scaling-laws/branch/main/graph/badge.svg)](https://codecov.io/gh/mmcdermott/simple-scaling-laws)
 [![Code Quality](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/code-quality-main.yaml/badge.svg)](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/code-quality-main.yaml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/mmcdermott/simple-scaling-laws#license)
 
