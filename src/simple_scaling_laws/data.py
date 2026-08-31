@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import polars as pl
 
+from .metrics import MetricError, to_fitting_scale
 from .notes import Note
 from .schema import Schema, discover_schema
 
@@ -304,6 +305,29 @@ def _target_observations(
         pl.col(target).cast(pl.Float64, strict=False).alias("_y"),
         *([pl.col(schema.test_set_id).cast(pl.String).alias("_e")] if schema.test_set_id else []),
     ).filter(pl.col("_y").is_finite())
+    kind = schema.target(target).kind
+    if kind.transforms and valid.height:
+        # Fit on the transformed scale, and transform *before* aggregating: the law is additive
+        # there, so a run's summary must be the mean of its transformed evaluation rows rather than
+        # the transform of their mean.
+        raw = valid["_y"].to_numpy()
+        try:
+            valid = valid.with_columns(pl.Series("_y", to_fitting_scale(raw, kind)))
+        except MetricError as exc:
+            raise DataError(f"Target {target!r}: {exc}") from exc
+        n_saturated = int(np.sum((raw <= 0.0) | (raw >= 1.0)))
+        if n_saturated:
+            notes.append(
+                Note(
+                    "saturated_values",
+                    "warning",
+                    f"{n_saturated} value(s) of {target!r} sit exactly at 0 or 1, which have no "
+                    "finite logit and were nudged just inside the interval. A metric pinned at its "
+                    "ceiling usually means the evaluation set is too small to separate models.",
+                    {"target": target, "n_saturated": n_saturated},
+                )
+            )
+
     n_dropped = frame.height - valid.height
     if n_dropped:
         notes.append(
@@ -410,6 +434,7 @@ def build_dataset(
     source: str | Path | pl.DataFrame | Any,
     columns: Mapping[str, str | Iterable[str]] | None = None,
     primary_target: str | None = None,
+    targets: Mapping[str, Any] | None = None,
 ) -> Dataset:
     """Read, validate, and reduce an input table to run-level observations.
 
@@ -417,6 +442,8 @@ def build_dataset(
         source: A parquet/CSV path or an in-memory dataframe.
         columns: Optional column-role overrides, see :func:`simple_scaling_laws.schema.discover_schema`.
         primary_target: Optional explicit primary target column.
+        targets: Optional explicit per-target descriptions, see
+            :func:`simple_scaling_laws.schema.discover_schema`.
 
     Returns:
         The prepared :class:`Dataset`.
@@ -459,7 +486,7 @@ def build_dataset(
     frame = read_table(source)
     if frame.height == 0:
         raise DataError("Input table is empty")
-    schema = discover_schema(frame.columns, columns, primary_target)
+    schema = discover_schema(frame.columns, columns, primary_target, targets)
 
     frame = _validate_predictors(frame, schema)
     frame = frame.with_columns(pl.col(schema.training_run_id).cast(pl.String))

@@ -10,7 +10,6 @@ import polars as pl
 from simple_scaling_laws import fit
 
 LOSS_PARAMS = {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}
-AUROC_PARAMS = {"E": 0.92, "A": -0.15, "alpha": 0.4, "B": -0.08, "beta": 0.3}
 
 
 def _shared_noise_frame() -> pl.DataFrame:
@@ -33,7 +32,7 @@ def _shared_noise_frame() -> pl.DataFrame:
                     "model_size__n": 10.0 ** (6 + i),
                     "dataset_size__d": 1e4,
                     "test_loss__ce": loss + 3 * effect,
-                    "test_metric__auroc": metric - 2 * effect,
+                    "test_metric__score": metric - 2 * effect,
                 }
             )
     return pl.DataFrame(rows)
@@ -42,7 +41,7 @@ def _shared_noise_frame() -> pl.DataFrame:
 def test_run_level_correlation_is_not_inflated_by_evaluation_rows():
     """Shared evaluation noise must not be mistaken for a relationship between metrics."""
     model = fit(_shared_noise_frame(), n_draws=100, seed=0)
-    correlations = model.diagnostics["metric_correlations"]["test_metric__auroc"]
+    correlations = model.diagnostics["metric_correlations"]["test_metric__score"]
     assert correlations["n_runs"] == 6
     assert correlations["n_evaluation_rows"] == 30
     assert abs(correlations["pearson"]) < 0.05, "run-level correlation should be ~0 by construction"
@@ -53,7 +52,7 @@ def test_correlation_table_exposes_both_levels():
     """The reported table shows the run-level estimate next to the misleading row-level one."""
     model = fit(_shared_noise_frame(), n_draws=100, seed=0)
     table = model.metric_correlations()
-    assert table["target"].to_list() == ["test_metric__auroc"]
+    assert table["target"].to_list() == ["test_metric__score"]
     row = table.row(0, named=True)
     assert row["n_runs"] == 6
     assert row["n_evaluation_rows"] == 30
@@ -97,19 +96,19 @@ def test_primary_target_is_excluded_from_its_own_diagnostics(multi_target_frame)
 def test_correlations_use_only_runs_observed_for_both_targets():
     """A target measured on a subset of runs is correlated only over the runs it shares."""
     frame = _shared_noise_frame().with_columns(
-        test_metric__auroc=pl.when(pl.col("training_run_id") == "r5")
+        test_metric__score=pl.when(pl.col("training_run_id") == "r5")
         .then(None)
-        .otherwise(pl.col("test_metric__auroc"))
+        .otherwise(pl.col("test_metric__score"))
     )
     model = fit(frame, n_draws=50, seed=0)
-    assert model.diagnostics["metric_correlations"]["test_metric__auroc"]["n_runs"] == 5
+    assert model.diagnostics["metric_correlations"]["test_metric__score"]["n_runs"] == 5
 
 
 def test_constant_metric_yields_undefined_correlation():
     """A metric with no variation has no correlation, and that is reported as null, not zero."""
-    frame = _shared_noise_frame().with_columns(test_metric__auroc=pl.lit(0.8))
+    frame = _shared_noise_frame().with_columns(test_metric__score=pl.lit(0.8))
     model = fit(frame, n_draws=50, seed=0)
-    correlations = model.diagnostics["metric_correlations"]["test_metric__auroc"]
+    correlations = model.diagnostics["metric_correlations"]["test_metric__score"]
     assert correlations["pearson"] is None
     assert correlations["pearson_ci"] is None
     assert model.metric_correlations()["pearson"][0] is None

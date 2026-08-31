@@ -8,6 +8,7 @@ normally makes.
 
 from __future__ import annotations
 
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,7 +42,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .data import TargetObservations
 
 #: Keys accepted in a configuration file.
-CONFIG_KEYS: frozenset[str] = frozenset({"law", "columns", "primary_target", "n_draws", "seed"})
+CONFIG_KEYS: frozenset[str] = frozenset({"law", "columns", "primary_target", "targets", "n_draws", "seed"})
 
 
 class ConfigError(ValueError):
@@ -79,6 +80,30 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if unknown:
         raise ConfigError(f"Unknown configuration key(s) {sorted(unknown)}; allowed: {sorted(CONFIG_KEYS)}")
     return data
+
+
+def target_seed(seed: int, target: str) -> int:
+    """The random seed used for one target's bootstrap.
+
+    Derived from the target's *name* rather than its position, so that the same target draws the
+    same cluster multipliers in two different experiments even when those experiments report
+    different sets of metrics. That is what lets :func:`simple_scaling_laws.compare` difference two
+    fits' draws and get the variance of the difference right rather than the sum of two variances.
+
+    Args:
+        seed: The experiment-level seed.
+        target: The target column name.
+
+    Returns:
+        A seed in ``[0, 2**32)``.
+
+    Examples:
+        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_loss__ce")
+        True
+        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_metric__auroc")
+        False
+    """
+    return (seed + zlib.crc32(target.encode())) % (2**32)
 
 
 def _variance_components(
@@ -185,6 +210,12 @@ def _fit_target(
         goodness_of_fit=goodness,
         uncertainty_method=uncertainty.method,
         n_failed_draws=uncertainty.n_failed,
+        pairing={
+            "method": uncertainty.method,
+            "n_clusters": observations.n_configurations,
+            "n_draws": n_draws,
+            "seed": seed,
+        },
     )
     notes = list(uncertainty.notes)
     notes.extend(diagnostics_mod.fit_notes(target, law, fit, bounds, uncertainty, components))
@@ -258,6 +289,10 @@ def _constant_target_fit(
         {
             "target": target,
             "value": float(np.mean(y)),
+            "configurations": [
+                dict(zip(dataset.schema.predictors, (float(v) for v in row), strict=True))
+                for row in dataset.config_values
+            ],
             "n_configurations": dataset.n_configurations,
             "n_runs": int(y.size),
         },
@@ -280,6 +315,7 @@ def _constant_target_fit(
         ),
         uncertainty_method="constant",
         n_failed_draws=0,
+        pairing={"method": "constant", "n_clusters": 0, "n_draws": n_draws, "seed": seed},
     )
     return target_fit, uncertainty, [note]
 
@@ -316,11 +352,19 @@ def _manifest(
             for name in dataset.schema.predictors
         },
         "targets": {
-            t.name: {"role": t.role, "signed_amplitude": t.signed_amplitude}
+            t.name: {
+                "role": t.role,
+                "signed_amplitude": t.signed_amplitude,
+                "kind": t.kind.to_dict(),
+            }
             for t in dataset.schema.targets
             if t.name in dataset.observations
         },
         "primary_target": dataset.schema.primary_target,
+        "configurations": [
+            dict(zip(dataset.schema.predictors, (float(v) for v in row), strict=True))
+            for row in dataset.config_values
+        ],
         "n_configurations": dataset.n_configurations,
         "n_training_runs": dataset.n_runs,
         "n_evaluation_rows": dataset.n_rows,
@@ -344,6 +388,7 @@ def fit(
     law: str = DEFAULT_LAW,
     columns: Mapping[str, str | Iterable[str]] | None = None,
     primary_target: str | None = None,
+    targets: Mapping[str, Any] | None = None,
     config: str | Path | Mapping[str, Any] | None = None,
     n_draws: int = DEFAULT_DRAWS,
     seed: int = 0,
@@ -355,6 +400,10 @@ def fit(
         law: The scaling-law family, see :func:`simple_scaling_laws.laws.available_laws`.
         columns: Optional column-role overrides, e.g. ``{"training_run_id": "run"}``.
         primary_target: Optional explicit primary target; defaults to the single test loss.
+        targets: Optional explicit per-target descriptions, e.g.
+            ``{"test_metric__custom": {"support": "unit", "direction": "higher"}}``. A target
+            confined to ``[0, 1]`` is fit on its logit so its asymptote cannot leave that range;
+            well-known metric names are recognized without being named here.
         config: Optional YAML path or mapping supplying any of the above. It fills in only the
             arguments left at their default value, so anything passed explicitly wins.
         n_draws: Number of bootstrap draws to retain per target.
@@ -400,10 +449,11 @@ def fit(
     law = settings.get("law", law) if law == DEFAULT_LAW else law
     columns = columns if columns is not None else settings.get("columns")
     primary_target = primary_target if primary_target is not None else settings.get("primary_target")
+    targets = targets if targets is not None else settings.get("targets")
     n_draws = int(settings.get("n_draws", n_draws)) if n_draws == DEFAULT_DRAWS else int(n_draws)
     seed = int(settings.get("seed", seed)) if seed == 0 else int(seed)
 
-    dataset = build_dataset(source, columns=columns, primary_target=primary_target)
+    dataset = build_dataset(source, columns=columns, primary_target=primary_target, targets=targets)
     notes: list[Note] = list(dataset.notes)
 
     varying = dataset.varying_predictors()
@@ -431,9 +481,9 @@ def fit(
 
     fits: dict[str, TargetFit] = {}
     draws: dict[str, Uncertainty] = {}
-    for i, target in enumerate(dataset.observations):
+    for target in dataset.observations:
         target_fit, uncertainty, target_notes = _fit_target(
-            dataset, instance, target, n_draws=n_draws, seed=seed + i
+            dataset, instance, target, n_draws=n_draws, seed=target_seed(seed, target)
         )
         fits[target] = target_fit
         draws[target] = uncertainty

@@ -10,6 +10,8 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any
 
+from .metrics import MetricKind, describe, parse_overrides
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterable, Mapping, Sequence
 
@@ -41,16 +43,42 @@ class Target:
     Attributes:
         name: The column name.
         role: One of :data:`TARGET_ROLES`.
+        kind: How the target behaves -- which direction is better, and whether it is confined to
+            ``[0, 1]`` and therefore fit on a transformed scale.
 
     Examples:
         >>> Target("test_loss__cross_entropy", "test_loss").is_loss
         True
         >>> Target("test_metric__auroc", "test_metric").signed_amplitude
         True
+
+        A target's kind is looked up from its short name unless stated explicitly:
+
+        >>> Target.build("test_metric__auroc", "test_metric").kind.support
+        'unit'
+        >>> Target.build("test_loss__cross_entropy", "test_loss").kind.direction
+        'lower'
     """
 
     name: str
     role: str
+    kind: MetricKind = dataclasses.field(default_factory=lambda: MetricKind("real", "lower", "default"))
+
+    @classmethod
+    def build(cls, name: str, role: str, override: Mapping[str, str] | None = None) -> Target:
+        """Construct a target, resolving its kind from the registry or an explicit description.
+
+        Args:
+            name: The column name.
+            role: One of :data:`TARGET_ROLES`.
+            override: An explicit ``{"support": ..., "direction": ...}`` description.
+
+        Returns:
+            The target.
+        """
+        prefix = f"{role}{SEP}"
+        short = name[len(prefix) :] if name.startswith(prefix) else name
+        return cls(name=name, role=role, kind=describe(short, role in LOSS_ROLES, override))
 
     @property
     def is_loss(self) -> bool:
@@ -147,7 +175,7 @@ class Schema:
             "optimizer_seed": self.optimizer_seed,
             "model_size": list(self.model_size),
             "dataset_size": list(self.dataset_size),
-            "targets": [{"name": t.name, "role": t.role} for t in self.targets],
+            "targets": [{"name": t.name, "role": t.role, "kind": t.kind.to_dict()} for t in self.targets],
             "primary_target": self.primary_target,
         }
 
@@ -169,7 +197,9 @@ class Schema:
             optimizer_seed=data.get("optimizer_seed"),
             model_size=tuple(data["model_size"]),
             dataset_size=tuple(data["dataset_size"]),
-            targets=tuple(Target(t["name"], t["role"]) for t in data["targets"]),
+            targets=tuple(
+                Target(t["name"], t["role"], MetricKind.from_dict(t["kind"])) for t in data["targets"]
+            ),
             primary_target=data["primary_target"],
         )
 
@@ -192,6 +222,7 @@ def discover_schema(
     columns: Sequence[str],
     overrides: Mapping[str, str | Iterable[str]] | None = None,
     primary_target: str | None = None,
+    targets: Mapping[str, Any] | None = None,
 ) -> Schema:
     """Infer column roles from column names, with optional explicit overrides.
 
@@ -206,6 +237,9 @@ def discover_schema(
             roles take a single column name; ``model_size``, ``dataset_size`` and the target roles
             take a column name or a list of them.
         primary_target: Optional explicit primary target column name.
+        targets: Optional explicit per-target descriptions, e.g.
+            ``{"test_metric__custom": {"support": "unit", "direction": "lower"}}``. Anything not
+            named here is looked up in :data:`simple_scaling_laws.metrics.KNOWN_METRICS`.
 
     Returns:
         The resolved :class:`Schema`.
@@ -259,6 +293,7 @@ def discover_schema(
         column prefixed with one of: test_loss__, train_loss__, test_metric__, train_metric__.
     """
     overrides = dict(overrides or {})
+    descriptions = parse_overrides(targets)
     unknown_roles = set(overrides) - set(ID_ROLES) - set(PREDICTOR_ROLES) - set(TARGET_ROLES)
     if unknown_roles:
         known = list(ID_ROLES) + list(PREDICTOR_ROLES) + list(TARGET_ROLES)
@@ -301,11 +336,18 @@ def discover_schema(
             _check_present(found, columns, role)
         else:
             found = tuple(c for c in columns if c.startswith(f"{role}{SEP}"))
-        targets.extend(Target(name, role) for name in found)
+        targets.extend(Target.build(name, role, descriptions.get(name)) for name in found)
     if not targets:
         prefixes = ", ".join(f"{r}{SEP}" for r in TARGET_ROLES)
         raise SchemaError(
             f"No target columns found. Expected at least one column prefixed with one of: {prefixes}."
+        )
+
+    unknown_targets = set(descriptions) - {t.name for t in targets}
+    if unknown_targets:
+        raise SchemaError(
+            f"Description(s) given for {sorted(unknown_targets)}, which are not target columns. "
+            f"Known targets: {sorted(t.name for t in targets)}"
         )
 
     seen: dict[str, str] = {}

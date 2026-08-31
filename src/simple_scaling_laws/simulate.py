@@ -15,6 +15,8 @@ import numpy as np
 import polars as pl
 
 from .laws import build_law
+from .metrics import describe, from_fitting_scale
+from .schema import LOSS_ROLES, SEP
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -51,7 +53,9 @@ def simulate_runs(
 
     Args:
         params: Per target, a mapping of law parameter name to its true value. Parameter names are
-            those of the chosen law, e.g. ``E``, ``A``, ``alpha``, ``B``, ``beta``.
+            those of the chosen law, e.g. ``E``, ``A``, ``alpha``, ``B``, ``beta``. For a target
+            confined to ``[0, 1]``, such as ``test_metric__auroc``, these are parameters of the law
+            **on the logit scale**, which is where the package models such metrics.
         model_sizes: Raw model-size values; crossed with ``dataset_sizes`` to form configurations.
         dataset_sizes: Raw dataset-size values.
         law: Name of the generating law.
@@ -132,6 +136,14 @@ def simulate_runs(
         for target in targets
     }
 
+    # A target confined to [0, 1] is *modelled* on its logit, so that is where its law, its
+    # training-run noise and its evaluation noise all live. Values are generated there and mapped
+    # back, which makes the generating parameters the same ones a fit recovers.
+    kinds = {}
+    for target in targets:
+        role, sep, short = target.partition(SEP)
+        kinds[target] = describe(short if sep else target, is_loss=role in LOSS_ROLES)
+
     rows: dict[str, list] = {name: [] for name in ("training_run_id", "train_set_id", "test_set_id")}
     rows["optimizer_seed"] = []
     for name in predictors:
@@ -160,5 +172,6 @@ def simulate_runs(
                     noise = eval_rng.normal(0.0, idiosyncratic) if idiosyncratic > 0 else 0.0
                     if paired_test_sets:
                         noise += shared[target][evaluation]
-                    rows[target].append(truth[target] + offsets[target] + noise)
+                    value = truth[target] + offsets[target] + noise
+                    rows[target].append(float(from_fitting_scale(np.array([value]), kinds[target])[0]))
     return pl.DataFrame(rows)

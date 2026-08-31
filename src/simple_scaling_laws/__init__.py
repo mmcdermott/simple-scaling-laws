@@ -20,6 +20,7 @@ Examples:
 
 from .api import fit, load_config
 from .artifact import FORMAT_VERSION
+from .compare import compare
 from .data import build_dataset
 from .laws import available_laws
 from .model import ScalingLawModel
@@ -33,6 +34,7 @@ __all__ = [
     "Schema",
     "available_laws",
     "build_dataset",
+    "compare",
     "discover_schema",
     "fit",
     "load",

@@ -84,9 +84,9 @@ Prediction returns a dataframe, so plotting is whatever you already use:
 ...         f"[{row['test_loss__cross_entropy__q025']:.3f}, "
 ...         f"{row['test_loss__cross_entropy__q975']:.3f}]"
 ...     )
-current    interpolation  2.854 [2.833, 2.875]
-10x-model  extrapolation  2.364 [2.321, 2.406]
-10x-data   extrapolation  2.485 [2.446, 2.525]
+current    interpolation  2.856 [2.837, 2.879]
+10x-model  extrapolation  2.367 [2.324, 2.412]
+10x-data   extrapolation  2.488 [2.457, 2.528]
 
 ```
 
@@ -172,6 +172,151 @@ True
 
 ```
 
+## Bounded metrics
+
+AUROC lives in `[0, 1]`; a fitted asymptote of 4.9 is not a statement about a classifier. Metrics
+known to be confined to the unit interval are therefore fit on their **logit** and mapped back for
+prediction, which makes the bound hold by construction rather than by clipping afterwards. It also
+makes the constant-variance assumption far more plausible, since an AUROC near 0.99 has much less
+room to move than one near 0.7.
+
+The common metrics are recognized by name, with no configuration:
+
+```pycon
+>>> from simple_scaling_laws.metrics import describe
+>>> for name in ("auroc", "auprc", "accuracy", "brier", "ece", "cross_entropy"):
+...     kind = describe(name, is_loss=name == "cross_entropy")
+...     print(f"{name:<14} {kind.support:<5} {kind.direction} is better")
+auroc          unit  higher is better
+auprc          unit  higher is better
+accuracy       unit  higher is better
+brier          unit  lower is better
+ece            unit  lower is better
+cross_entropy  real  lower is better
+
+```
+
+Direction matters because the role prefix does not carry it: `test_metric__auroc` improves upward
+and `test_metric__brier` improves downward, and only the direction turns a difference between two
+systems into a win rate. Anything the table does not recognize is left untransformed, with its
+direction marked as assumed rather than known. Describe such a target explicitly:
+
+```pycon
+>>> described = fit(
+...     runs,
+...     targets={"test_metric__auroc": {"support": "unit", "direction": "higher"}},
+...     n_draws=50,
+...     seed=0,
+... )
+>>> described.target_kind("test_metric__auroc").support
+'unit'
+
+```
+
+The same goes in a config file under a `targets:` key. Note that a transformed target's *parameters*
+are on the logit scale — its `E` is an asymptote in logit units — while everything `predict` returns
+is on the metric's own scale, and cannot leave it:
+
+```pycon
+>>> auroc = described.predict(
+...     {
+...         "model_size__n_params": [1e6, 1e20],
+...         "dataset_size__n_subjects": [1e3, 1e20],
+...     }
+... )
+>>> lo, hi = auroc["test_metric__auroc__q025"], auroc["test_metric__auroc__q975"]
+>>> bool((lo >= 0).all() and (hi <= 1).all())
+True
+
+```
+
+## Comparing systems
+
+Fitting a law per system says how each one scales. The question a triage platform actually asks is
+comparative — *of these arms, which is worth scaling up?* — and two overlapping intervals are
+perfectly compatible with one arm being reliably better. What you need is the distribution of the
+**difference**:
+
+```bash
+scaling-laws compare points.parquet \
+	--model baseline=baseline.slaw \
+	--model tuned=tuned.slaw \
+	--reference baseline
+```
+
+```pycon
+>>> from simple_scaling_laws import compare
+>>> def arm(alpha, seed):
+...     return simulate_runs(
+...         {"test_loss__cross_entropy": {"E": 1.0, "A": 2.0, "alpha": alpha, "B": 1.5, "beta": 0.25}},
+...         runs_per_config=2,
+...         evaluations_per_run=4,
+...         run_sd=0.01,
+...         eval_sd=0.02,
+...         seed=seed,
+...     )
+>>> arms = {
+...     "baseline": fit(arm(0.30, 0), n_draws=300, seed=0),
+...     "tuned": fit(arm(0.34, 1), n_draws=300, seed=0),
+...     "risky": fit(arm(0.28, 2), n_draws=300, seed=0),
+... }
+>>> table = compare(
+...     arms,
+...     {
+...         "point_id": ["now", "10x"],
+...         "model_size__n_params": [1e8, 1e9],
+...         "dataset_size__n_subjects": [1e5, 1e5],
+...     },
+...     reference="baseline",
+... )
+>>> for row in table.iter_rows(named=True):
+...     print(
+...         f"{row['point_id']:<4} {row['system']:<9} "
+...         f"{row['value__median']:.3f}  best {row['p_best']:>4.0%}  "
+...         f"better than baseline {row['p_better_than_reference']:>4.0%}"
+...     )
+10x  baseline  2.352  best   0%  better than baseline   0%
+10x  risky     2.382  best   0%  better than baseline  28%
+10x  tuned     2.245  best 100%  better than baseline 100%
+now  baseline  2.849  best   0%  better than baseline   0%
+now  risky     2.890  best   0%  better than baseline   2%
+now  tuned     2.746  best 100%  better than baseline 100%
+
+```
+
+Any number of arms works, and the output is long — one row per point per arm — so ten arms do not
+become a hundred columns. `p_best` is the probability that arm is the best of the set at that point;
+with a `reference`, each arm also gets the distribution of its difference from the reference
+(`difference__median`, `difference__q025`, …) and the probability it beats it. Direction is handled
+for you: a loss is better when smaller, AUROC when larger.
+
+### Why the draws have to be paired
+
+Arms run at the same scales share a configuration-level deviation — a split that is hard for one is
+hard for the other, and where the law misfits it bends both curves the same way. That shared part
+cancels in the difference, so the difference is pinned down far more sharply than either level is.
+
+The wild bootstrap makes this nearly free. It perturbs residuals with a multiplier drawn once per
+configuration; if every arm gets the *same* multiplier sequence, the perturbation of the difference
+is driven by the difference's own residual. That is right whether or not the arms share splits: when
+their residuals are correlated the difference is sharp, and when they are independent the arithmetic
+recovers the independent answer on its own. This is common random numbers, the standard device for
+comparing simulations, and it is why a paired t-test beats an unpaired one.
+
+It matters a great deal. Measured against the true sampling spread of the difference, over 120
+simulated worlds:
+
+| shared configuration sd | true sd(A−B) | paired draws   | independent draws |
+| ----------------------- | ------------ | -------------- | ----------------- |
+| 0.00                    | 0.0329       | 0.0413 (1.26x) | 0.0430 (1.31x)    |
+| 0.05                    | 0.0330       | 0.0416 (1.26x) | 0.1330 (4.03x)    |
+| 0.15                    | 0.0338       | 0.0442 (1.31x) | 0.3715 (11.00x)   |
+
+Differencing two independently-seeded fits is **4x to 11x too wide** once the arms share structure —
+wide enough that no real difference is ever detectable. Fits pair automatically when they were run
+with the same `seed` on the same configuration grid, which is the normal case for arms of one
+experiment; `compare` verifies it, reports `paired`, and warns loudly when it cannot.
+
 ## The statistics, briefly
 
 **Evaluation rows are not training evidence.** Each run is reduced to one observation -- its mean --
@@ -220,7 +365,7 @@ purely so its inflation is visible:
 ...         f"(evaluation-row r={row['evaluation_row_pearson']:.3f} over "
 ...         f"{row['n_evaluation_rows']} rows)"
 ...     )
-test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.971 over 90 rows)
+test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.970 over 90 rows)
 
 ```
 

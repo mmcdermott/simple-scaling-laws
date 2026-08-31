@@ -378,6 +378,10 @@ def metric_correlations(dataset: Dataset, seed: int = 0, n_draws: int = CORRELAT
     Confidence intervals come from resampling scaling configurations with replacement, which
     respects the fact that runs at the same scale are not independent draws.
 
+    A target confined to ``[0, 1]`` contributes its logit, since that is the scale it was fit and
+    aggregated on. Spearman is unaffected by that -- it is rank-based -- and Pearson is generally a
+    little larger, because the relationship is closer to linear there.
+
     Args:
         dataset: The prepared dataset.
         seed: Seed for the bootstrap.

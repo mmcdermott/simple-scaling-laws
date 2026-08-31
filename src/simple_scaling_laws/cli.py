@@ -1,11 +1,12 @@
 """The ``scaling-laws`` command-line interface.
 
-Two commands do the real work::
+Three commands do the real work::
 
     scaling-laws fit runs.parquet --law separable-power --output experiment.slaw
     scaling-laws predict experiment.slaw points.parquet --output predictions.parquet
+    scaling-laws compare points.parquet --model a=a.slaw --model b=b.slaw --reference a
 
-and a third, ``inspect``, prints a fitted artifact in human-readable form. Statistical options are
+and a fourth, ``inspect``, prints a fitted artifact in human-readable form. Statistical options are
 deliberately absent from ordinary usage: the package decides them.
 """
 
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from .api import fit as fit_model
 from .artifact import package_version
+from .compare import compare as compare_models
 from .laws import DEFAULT_LAW, available_laws
 from .model import DEFAULT_QUANTILES, PREDICTION_KINDS, ScalingLawModel
 from .uncertainty import DEFAULT_DRAWS
@@ -63,6 +65,39 @@ def parse_columns(pairs: Sequence[str] | None) -> dict[str, str] | None:
         if not sep or not role or not column:
             raise CLIError(f"--columns expects role=column, got {pair!r}")
         out[role] = column
+    return out
+
+
+def parse_models(pairs: Sequence[str] | None) -> dict[str, str]:
+    """Parse repeated ``--model NAME=ARTIFACT`` arguments.
+
+    Args:
+        pairs: Raw ``name=path`` strings.
+
+    Returns:
+        A mapping from system name to artifact path, in the order given.
+
+    Raises:
+        CLIError: If fewer than two systems are named, or an argument is malformed.
+
+    Examples:
+        >>> parse_models(["baseline=a.slaw", "tuned=b.slaw"])
+        {'baseline': 'a.slaw', 'tuned': 'b.slaw'}
+        >>> parse_models(["only=a.slaw"])
+        Traceback (most recent call last):
+        ...
+        simple_scaling_laws.cli.CLIError: Comparing needs at least two --model arguments, got 1
+    """
+    out: dict[str, str] = {}
+    for pair in pairs or []:
+        name, sep, path = pair.partition("=")
+        if not sep or not name or not path:
+            raise CLIError(f"--model expects NAME=ARTIFACT, got {pair!r}")
+        if name in out:
+            raise CLIError(f"Duplicate system name {name!r}")
+        out[name] = path
+    if len(out) < 2:
+        raise CLIError(f"Comparing needs at least two --model arguments, got {len(out)}")
     return out
 
 
@@ -189,6 +224,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     predict_parser.add_argument("--seed", type=int, help="Random seed for new-run noise (advanced).")
 
+    compare_parser = subparsers.add_parser(
+        "compare", help="Compare two or more fitted systems at new scales."
+    )
+    compare_parser.add_argument("points", help="Points to compare at, as .parquet or .csv.")
+    compare_parser.add_argument(
+        "--model",
+        action="append",
+        required=True,
+        metavar="NAME=ARTIFACT",
+        help="A system to compare, e.g. --model baseline=a.slaw. Give at least two.",
+    )
+    compare_parser.add_argument("--reference", help="System to measure differences against; default is none.")
+    compare_parser.add_argument("--target", help="Target to compare on; default is the shared primary.")
+    compare_parser.add_argument("--output", "-o", help="Destination .parquet or .csv (default: stdout CSV).")
+    compare_parser.add_argument(
+        "--quantiles",
+        default=",".join(str(q) for q in DEFAULT_QUANTILES),
+        help="Comma-separated quantiles to report.",
+    )
+    compare_parser.add_argument(
+        "--kind",
+        default="mean",
+        choices=list(PREDICTION_KINDS),
+        help="'mean' to compare expected curves, 'new-run' to compare single newly trained models.",
+    )
+    compare_parser.add_argument("--seed", type=int, default=0, help="Random seed (advanced).")
+
     inspect_parser = subparsers.add_parser("inspect", help="Print a fitted artifact in readable form.")
     inspect_parser.add_argument("artifact", help="A .slaw artifact directory.")
 
@@ -236,6 +298,26 @@ def _run_predict(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_compare(args: argparse.Namespace) -> int:
+    """Execute the ``compare`` subcommand."""
+    models = {name: ScalingLawModel.load(path) for name, path in parse_models(args.model).items()}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        table = compare_models(
+            models,
+            args.points,
+            target=args.target,
+            reference=args.reference,
+            kind=args.kind,
+            quantiles=parse_quantiles(args.quantiles),
+            seed=args.seed,
+        )
+    for warning in caught:
+        print(f"warning: {warning.message}", file=sys.stderr)
+    write_frame(table, args.output)
+    return 0
+
+
 def _run_inspect(args: argparse.Namespace) -> int:
     """Execute the ``inspect`` subcommand."""
     model = ScalingLawModel.load(args.artifact)
@@ -257,7 +339,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         The process exit code: ``0`` on success, ``1`` on a handled error.
     """
     args = build_parser().parse_args(argv)
-    handlers = {"fit": _run_fit, "predict": _run_predict, "inspect": _run_inspect}
+    handlers = {
+        "fit": _run_fit,
+        "predict": _run_predict,
+        "compare": _run_compare,
+        "inspect": _run_inspect,
+    }
     try:
         return handlers[args.command](args)
     except (CLIError, ValueError, KeyError, FileNotFoundError) as exc:

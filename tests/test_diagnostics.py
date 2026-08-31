@@ -127,7 +127,11 @@ def test_a_single_configuration_yields_a_constant_fit():
     assert model.fits["test_loss__ce"].uncertainty_method == "constant"
     assert "constant_target" in codes(model)
     predictions = model.predict({"model_size__n_params": [1e7], "dataset_size__n_subjects": [1e4]})
-    assert predictions["test_loss__ce__median"][0] == pytest.approx(model.params("test_loss__ce")["E"])
+    # The reported level is the observed one; the median of the bootstrapped means differs from the
+    # mean itself only by resampling noise.
+    assert predictions["test_loss__ce__median"][0] == pytest.approx(
+        model.params("test_loss__ce")["E"], abs=0.01
+    )
 
 
 def test_a_saturated_metric_is_reported_as_constant(loss_frame):
@@ -135,8 +139,13 @@ def test_a_saturated_metric_is_reported_as_constant(loss_frame):
     frame = loss_frame.with_columns(test_metric__auroc=pl.lit(1.0))
     model = fit(frame, n_draws=100, seed=0)
     assert model.fits["test_metric__auroc"].uncertainty_method == "constant"
-    assert model.params("test_metric__auroc") == {"E": 1.0, "A": 0.0, "alpha": 0.0, "B": 0.0, "beta": 0.0}
+    # AUROC is fit on its logit, so the constant is an offset in logit units with every other term
+    # zeroed; what matters is that it predicts back to the saturated value it came from.
+    assert [v for k, v in model.params("test_metric__auroc").items() if k != "E"] == [0.0] * 4
+    saturated = model.predict({"model_size__n_params": [1e7], "dataset_size__n_subjects": [1e4]})
+    assert saturated["test_metric__auroc__median"][0] == pytest.approx(1.0, abs=1e-5)
     assert "constant_target" in codes(model)
+    assert "saturated_values" in codes(model)
     # The other target is unaffected.
     assert model.params("test_loss__cross_entropy")["alpha"] == pytest.approx(0.3, abs=0.1)
 

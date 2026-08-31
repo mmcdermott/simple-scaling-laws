@@ -12,6 +12,7 @@ import polars as pl
 from . import artifact as artifact_io
 from .data import DataError, read_table
 from .laws import EXPONENT, LawInstance
+from .metrics import MetricKind, from_fitting_scale, scale_description
 from .notes import Note
 from .schema import Schema
 from .uncertainty import Uncertainty, from_arrays, to_arrays
@@ -86,6 +87,9 @@ class TargetFit:
         goodness_of_fit: Fit-quality statistics.
         uncertainty_method: How the draws were produced.
         n_failed_draws: Bootstrap refits that did not report convergence.
+        pairing: What the draws are comparable to. Two fits whose ``pairing`` matches for a target
+            used identical cluster multipliers, so differencing their draws measures the variance of
+            the difference rather than the sum of two variances.
     """
 
     target: str
@@ -97,6 +101,7 @@ class TargetFit:
     goodness_of_fit: dict[str, Any]
     uncertainty_method: str
     n_failed_draws: int
+    pairing: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     @property
     def run_sd(self) -> float:
@@ -121,7 +126,11 @@ class TargetFit:
             "variance_components": self.variance_components,
             "optimizer": self.optimizer,
             "goodness_of_fit": self.goodness_of_fit,
-            "uncertainty": {"method": self.uncertainty_method, "n_failed_draws": self.n_failed_draws},
+            "uncertainty": {
+                "method": self.uncertainty_method,
+                "n_failed_draws": self.n_failed_draws,
+                "pairing": self.pairing,
+            },
         }
 
     @classmethod
@@ -137,6 +146,7 @@ class TargetFit:
             goodness_of_fit=dict(data["goodness_of_fit"]),
             uncertainty_method=data["uncertainty"]["method"],
             n_failed_draws=int(data["uncertainty"]["n_failed_draws"]),
+            pairing=dict(data["uncertainty"].get("pairing") or {}),
         )
 
 
@@ -297,6 +307,11 @@ class ScalingLawModel:
         and can be read directly; amplitudes are on the normalized scale, and the artifact's
         ``fits.json`` additionally records ``params_raw_scale`` for the raw-unit reading.
 
+        For a target confined to ``[0, 1]`` the parameters are also on the **logit** scale it was fit
+        on, so its offset is an asymptote in logit units -- pass it through
+        :func:`simple_scaling_laws.metrics.from_fitting_scale`, or read the asymptote off
+        :meth:`predict` at a large scale, to get it back in the metric's own units.
+
         Args:
             target: The target column name.
 
@@ -385,7 +400,9 @@ class ScalingLawModel:
             fit = self._fits[target]
             values = ", ".join(f"{k}={v:.4g}" for k, v in self.params(target).items())
             marker = " (primary)" if target == self.primary_target else ""
-            lines.append(f"  {target}{marker}: {values}")
+            scale = scale_description(self.target_kind(target))
+            suffix = "" if scale == "identity" else f"  [fit on the {scale} scale]"
+            lines.append(f"  {target}{marker}: {values}{suffix}")
             lines.append(
                 f"      run_sd={fit.run_sd:.4g}  "
                 f"R2={_format(fit.goodness_of_fit.get('r_squared'))}  "
@@ -493,12 +510,9 @@ class ScalingLawModel:
         if any(not 0 <= q <= 1 for q in quantiles):
             raise PredictionError(f"quantiles must lie in [0, 1], got {quantiles}")
 
-        frame = _points_frame(points, self._domain_predictors)
+        frame = self.prepare_points(points)
         raw = frame.select(self._domain_predictors).to_numpy().astype(float)
-        if not np.all(np.isfinite(raw)) or np.any(raw <= 0):
-            raise PredictionError("Predictor values must be finite and strictly positive")
-        fitted = frame.select(self._law.predictors).to_numpy().astype(float)
-        log_x = np.log(fitted) - np.log(self._reference)
+        log_x = self.fitting_predictors(frame)
 
         is_extrapolation, distance = self.domain_position(raw)
         if bool(is_extrapolation.any()):
@@ -518,13 +532,73 @@ class ScalingLawModel:
             "extrapolation_distance": distance,
         }
         for target in requested:
-            draws = self._draws[target]
-            values = self._law.evaluate_many(draws.params, log_x)
-            if kind == "new-run":
-                values = values + _run_noise(rng, draws, values.shape)
+            values = self.target_draws(target, log_x, kind=kind, rng=rng)
             for q in quantiles:
                 columns[f"{target}__{quantile_suffix(q)}"] = np.quantile(values, q, axis=0)
         return pl.DataFrame(columns)
+
+    def prepare_points(self, points: Any) -> pl.DataFrame:
+        """Validate a prediction request into a frame with a ``point_id`` and every predictor.
+
+        Args:
+            points: A dataframe, parquet/CSV path, or mapping of predictor column to values.
+
+        Returns:
+            The validated frame.
+
+        Raises:
+            PredictionError: If a predictor column is missing or a value is not positive and finite.
+        """
+        frame = _points_frame(points, self._domain_predictors)
+        raw = frame.select(self._domain_predictors).to_numpy().astype(float)
+        if not np.all(np.isfinite(raw)) or np.any(raw <= 0):
+            raise PredictionError("Predictor values must be finite and strictly positive")
+        return frame
+
+    def fitting_predictors(self, frame: pl.DataFrame) -> np.ndarray:
+        """Log-normalized values of this model's *fitted* predictors, ready for the law.
+
+        Args:
+            frame: A frame from :meth:`prepare_points`.
+
+        Returns:
+            Array of shape ``(n_points, n_fitted_predictors)``.
+        """
+        fitted = frame.select(self._law.predictors).to_numpy().astype(float)
+        return np.log(fitted) - np.log(self._reference)
+
+    def target_draws(
+        self,
+        target: str,
+        log_x: np.ndarray,
+        kind: str = "mean",
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
+        """Predicted values for one target, one row per bootstrap draw, on the target's own scale.
+
+        This is the primitive behind :meth:`predict`, exposed because comparing systems needs the
+        draws themselves rather than their quantiles.
+
+        Args:
+            target: The target column name.
+            log_x: Log-normalized predictors for the fitted law, shape ``(n_points, n_fitted)``.
+            kind: ``"mean"`` or ``"new-run"``.
+            rng: Random source for the ``new-run`` noise.
+
+        Returns:
+            Array of shape ``(n_draws, n_points)``.
+        """
+        draws = self._draws[target]
+        values = self._law.evaluate_many(draws.params, log_x)
+        if kind == "new-run":
+            values = values + _run_noise(rng or np.random.default_rng(0), draws, values.shape)
+        # Training-run noise is added on the fitting scale, where the model is additive, and only
+        # then mapped back -- so a bounded metric's interval cannot leave its bounds.
+        return from_fitting_scale(values, self.target_kind(target))
+
+    def target_kind(self, target: str) -> MetricKind:
+        """How one target behaves: which direction is better, and what scale it is fit on."""
+        return self._schema.target(target).kind
 
     def save(self, path: str | Path) -> Path:
         """Write this model to a ``.slaw`` artifact directory.

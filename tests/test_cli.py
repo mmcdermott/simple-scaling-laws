@@ -225,3 +225,77 @@ def test_parse_quantiles_rejects_out_of_range_values():
         parse_quantiles("abc")
     with pytest.raises(CLIError):
         parse_quantiles(",")
+
+
+def test_compare_two_artifacts(workspace, capsys):
+    """The comparison command answers which arm wins at a scale neither was run at."""
+    for name, alpha in (("a", 0.30), ("b", 0.36)):
+        frame = simulate_runs(
+            {"test_loss__ce": {"E": 1.0, "A": 2.0, "alpha": alpha, "B": 1.5, "beta": 0.25}},
+            runs_per_config=2,
+            evaluations_per_run=4,
+            run_sd=0.01,
+            eval_sd=0.02,
+            seed=0 if name == "a" else 1,
+        )
+        frame.write_parquet(workspace / f"{name}.parquet")
+        assert (
+            main(
+                [
+                    "fit",
+                    str(workspace / f"{name}.parquet"),
+                    "--output",
+                    str(workspace / f"{name}.slaw"),
+                    "--draws",
+                    "200",
+                    "--quiet",
+                ]
+            )
+            == 0
+        )
+    capsys.readouterr()
+
+    output = workspace / "comparison.parquet"
+    assert (
+        main(
+            [
+                "compare",
+                str(workspace / "points.parquet"),
+                "--model",
+                f"baseline={workspace / 'a.slaw'}",
+                "--model",
+                f"tuned={workspace / 'b.slaw'}",
+                "--reference",
+                "baseline",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    table = pl.read_parquet(output)
+    assert table.height == 4
+    assert set(table["system"].to_list()) == {"baseline", "tuned"}
+    assert table["paired"].all()
+    far = table.filter((pl.col("point_id") == "bigger") & (pl.col("system") == "tuned")).row(0, named=True)
+    assert far["p_best"] > 0.9
+    assert far["p_better_than_reference"] > 0.9
+
+
+def test_compare_needs_at_least_two_models(workspace, capsys):
+    """One artifact is not a comparison."""
+    main(
+        [
+            "fit",
+            str(workspace / "runs.parquet"),
+            "--output",
+            str(workspace / "one.slaw"),
+            "--draws",
+            "50",
+            "--quiet",
+        ]
+    )
+    capsys.readouterr()
+    code = main(["compare", str(workspace / "points.parquet"), "--model", f"only={workspace / 'one.slaw'}"])
+    assert code == 1
+    assert "at least two" in capsys.readouterr().err
