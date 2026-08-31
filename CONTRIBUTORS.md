@@ -63,8 +63,8 @@ and the CI release workflow publishes to PyPI.
 Clone the repository, sync the environment, and install the pre-commit hooks:
 
 ```bash
-git clone https://github.com/McDermottHealthAI/MHAL-template.git
-cd MHAL-template
+git clone https://github.com/mmcdermott/simple-scaling-laws.git
+cd simple-scaling-laws
 uv sync
 uv run pre-commit install
 ```

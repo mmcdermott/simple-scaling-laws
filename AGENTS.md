@@ -41,3 +41,25 @@ agent-specific additions and reminders that build on those conventions — they 
   surface real security findings.
 - Do not commit data files or secrets. `gitleaks` runs as a pre-commit hook but treat it as a
   backstop, not a substitute for care.
+
+## Project-specific notes for `simple-scaling-laws`
+
+- **The package's whole value is its statistical defaults.** Before changing anything in
+    `fitting.py`, `uncertainty.py` or `data.py`, read the module docstring: each one states *why*
+    the current choice was made (run-level aggregation, wild cluster bootstrap over configurations,
+    Webb weights, leverage correction, replicate-vs-residual run variance). If you change a default,
+    change the docstring's justification with it, and add a test that pins the new behavior.
+- **Run-level aggregation is load-bearing.** Every fit and every diagnostic works on one observation
+    per `training_run_id`. Anything that starts treating evaluation rows as independent observations
+    is a bug, and `tests/test_variance_components.py` exists to catch it.
+- **Never fit on a degenerate design.** Constant targets and predictors held fixed are short-circuited
+    on purpose: handing them to `scipy.optimize.least_squares` costs thousands of vanishing
+    trust-region steps per fit. If you touch that path, re-check the suite's wall-clock.
+- **Everything is seeded.** `fit(..., seed=...)` and `predict(..., seed=...)` must stay
+    reproducible, because `tests/test_serialization.py` asserts a reloaded artifact predicts
+    bit-identically.
+- **Warnings are data, not logging.** New failure modes get a `Note` with a stable `code`, and are
+    persisted into `diagnostics.json`. Callers branch on those codes.
+- **Doctests carry the documentation.** `README.md` and every module docstring are executed by
+    `pytest`. Keep doctest output width-independent (no wide Polars table renderings) so it does not
+    depend on terminal size in CI.
