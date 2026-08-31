@@ -58,8 +58,11 @@ WEBB_WEIGHTS: tuple[float, ...] = (
 )
 
 #: Leverage is clipped below one before the residual correction, so a saturated observation cannot
-#: produce an infinite pseudo-residual.
-MAX_LEVERAGE = 0.99
+#: produce an infinite pseudo-residual. The cap is tied to the sample size rather than fixed at some
+#: constant like 0.99, because a fixed constant would silently let an arbitrary number set the width
+#: of the whole interval whenever one configuration is nearly saturated -- which is common when the
+#: design barely supports the law.
+MAX_LEVERAGE_HEADROOM = 2.0
 
 #: A refit whose cost exceeds the best grid-restart cost by more than this relative margin is
 #: re-polished from the grid, so warm-starting cannot silently trap draws in the original basin.
@@ -176,7 +179,8 @@ def corrected_residuals(
         Corrected residuals, one per run.
     """
     residual = y - law.evaluate(params, log_x)
-    h = np.clip(leverage(law, params, log_x, weights), 0.0, MAX_LEVERAGE)
+    ceiling = 1.0 - MAX_LEVERAGE_HEADROOM / max(y.size, MAX_LEVERAGE_HEADROOM + 1.0)
+    h = np.clip(leverage(law, params, log_x, weights), 0.0, ceiling)
     clusters = y.size if n_clusters is None else n_clusters
     return residual / np.sqrt(1.0 - h) * cluster_correction(clusters, law.n_params)
 

@@ -184,8 +184,12 @@ three repeats you have at each. Without replicate runs it falls back to the scat
 curve, which also contains the law's misspecification -- biased upward, which is the safe direction.
 
 **Shared test sets are recognized.** When models share `test_set_id` values, the correlation between
-their evaluation residuals is estimated and reported; only the part of evaluation noise that is *not*
-shared is treated as averaging away when runs are compared.
+their evaluation residuals is estimated and reported, and only the part of evaluation noise that is
+*not* shared is treated as averaging away when runs are compared. This matters more than it sounds:
+with nine tenths of the evaluation noise coming from the resamples themselves, subtracting the
+*marginal* within-run variance drives the estimated run-to-run variance to exactly zero in about half
+of simulated experiments -- which would make a `new-run` prediction no wider than a `mean` one.
+Subtracting only the unshared part recovers the true value.
 
 **Uncertainty is a wild cluster bootstrap over configurations.** Residuals around the fitted curve
 are corrected and re-signed with Webb's six-point weights, drawn once per *configuration* so that a

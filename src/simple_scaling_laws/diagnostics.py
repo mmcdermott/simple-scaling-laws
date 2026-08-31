@@ -290,6 +290,19 @@ def fit_notes(
                 )
             )
 
+    if components.run_var == 0.0 and components.source != "none":
+        notes.append(
+            Note(
+                "zero_run_variance",
+                "warning",
+                f"The run-to-run variance for {target!r} estimated to exactly zero, which means the "
+                "variance decomposition attributed all of the observed scatter to evaluation noise. "
+                "That is usually an artefact of having only two or three replicate runs rather than "
+                "a finding: a 'new-run' prediction will look no wider than a 'mean' one.",
+                {"target": target, "source": components.source},
+            )
+        )
+
     replicate, residual = components.run_var_replicate, components.run_var_residual
     if replicate is not None and residual is not None and replicate > 0:
         ratio = residual / replicate

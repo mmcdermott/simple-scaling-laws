@@ -457,6 +457,9 @@ def fit(
             target: {
                 "eval_sd": float(np.sqrt(observations.eval_var)),
                 "eval_sd_independent": float(np.sqrt(observations.eval_var_independent)),
+                "eval_sd_shared": float(
+                    np.sqrt(max(0.0, observations.eval_var - observations.eval_var_independent))
+                ),
                 "eval_pair_correlation": observations.eval_pair_correlation,
                 "n_shared_pairs": observations.n_shared_pairs,
             }

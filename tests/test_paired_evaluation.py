@@ -12,6 +12,7 @@ import pytest
 
 from simple_scaling_laws import fit
 from simple_scaling_laws.data import build_dataset
+from simple_scaling_laws.fitting import replicate_run_variance
 from simple_scaling_laws.simulate import simulate_runs
 
 TRUE_LOSS = {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}
@@ -140,3 +141,50 @@ def test_pairing_does_not_change_the_point_estimate():
     fitted = paired.params("test_loss__ce")
     assert np.isfinite(list(fitted.values())).all()
     assert fitted["alpha"] == pytest.approx(TRUE_LOSS["alpha"], abs=0.08)
+
+
+def test_heavy_shared_test_set_noise_does_not_destroy_the_run_variance():
+    """The decisive case for the paired-evaluation machinery.
+
+    When bootstrap resamples carry most of the evaluation noise and are shared across models, the *marginal*
+    within-run variance vastly overstates the noise that averages away when runs are compared. Subtracting it
+    would over-correct the run-to-run variance to zero, which is the anti-conservative direction and would
+    make ``new-run`` predictions no wider than ``mean`` ones.
+
+    Here nine tenths of the evaluation variance is a shared test-set effect. Using the marginal variance
+    drives the run-variance estimate to exactly zero about half the time; using the unshared part, which is
+    what the package estimates from the reused ``test_set_id`` values, recovers the truth.
+    """
+    shared_var, unshared_var, run_var = 0.9, 0.1, 0.05
+    marginal_estimates, unshared_estimates = [], []
+    for seed in range(40):
+        rng = np.random.default_rng(seed)
+        test_effects = rng.normal(0.0, np.sqrt(shared_var), 20)
+        rows = []
+        for config in range(6):
+            for replicate in range(2):
+                offset = rng.normal(0.0, np.sqrt(run_var))
+                for evaluation, effect in enumerate(test_effects):
+                    rows.append(
+                        {
+                            "training_run_id": f"c{config}_r{replicate}",
+                            "test_set_id": f"b{evaluation}",
+                            "model_size__n": 10.0 ** (6 + config),
+                            "dataset_size__d": 1e4,
+                            "test_loss__ce": 2.0
+                            - 0.1 * config
+                            + offset
+                            + effect
+                            + rng.normal(0.0, np.sqrt(unshared_var)),
+                        }
+                    )
+        observations = build_dataset(pl.DataFrame(rows)).observations["test_loss__ce"]
+        marginal_estimates.append(replicate_run_variance(observations, observations.eval_var)[0])
+        unshared_estimates.append(replicate_run_variance(observations, observations.eval_var_independent)[0])
+
+    marginal = np.array(marginal_estimates)
+    unshared = np.array(unshared_estimates)
+    assert np.mean(marginal == 0) > 0.25, "the marginal variance should over-correct to zero often"
+    assert np.mean(unshared == 0) == 0.0
+    assert unshared.mean() == pytest.approx(run_var, rel=0.3)
+    assert unshared.mean() > 2 * marginal.mean()
