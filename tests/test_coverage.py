@@ -11,6 +11,7 @@ Before the small-sample calibration in
 :func:`simple_scaling_laws.uncertainty.cluster_correction` was added, this design measured 74%.
 """
 
+import itertools
 import warnings
 
 import numpy as np
@@ -35,7 +36,7 @@ MINIMUM_COVERAGE = 0.82
 
 def _coverage(runs_per_config, model_sizes, dataset_sizes, point):
     """Fraction of replications whose intervals covered the truth, for parameters and a prediction."""
-    parameter_hits = {name: 0 for name in TRUTH}
+    parameter_hits = dict.fromkeys(TRUTH, 0)
     prediction_hits = 0
     for seed in range(N_REPLICATIONS):
         frame = simulate_runs(
@@ -102,9 +103,9 @@ def test_intervals_are_calibrated_with_a_single_run_per_configuration():
 def test_a_two_level_predictor_is_always_flagged_rather_than_silently_wrong():
     """A design that cannot identify the law must say so every time, not merely widen.
 
-    With only two distinct dataset sizes the exponent, amplitude and offset trade off exactly, so
-    the fitted parameters are arbitrary and no amount of interval widening makes them right. The
-    package cannot fix this; what it must do is refuse to be quiet about it.
+    With only two distinct dataset sizes the exponent, amplitude and offset trade off exactly, so the fitted
+    parameters are arbitrary and no amount of interval widening makes them right. The package cannot fix this;
+    what it must do is refuse to be quiet about it.
     """
     flagged = 0
     for seed in range(10):
@@ -127,6 +128,6 @@ def test_a_two_level_predictor_is_always_flagged_rather_than_silently_wrong():
 def test_the_calibration_factor_grows_as_the_design_thins():
     """The correction must be monotone in how little the design has left over after fitting."""
     factors = [cluster_correction(c, 5) for c in (6, 9, 16, 25, 100)]
-    assert all(a > b for a, b in zip(factors, factors[1:], strict=False))
+    assert all(a > b for a, b in itertools.pairwise(factors))
     assert factors[-1] == pytest.approx(1.0, abs=0.05)
     assert all(f >= 1.0 for f in factors)

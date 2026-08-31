@@ -104,6 +104,10 @@ def write_artifact(
 ) -> Path:
     """Write a complete artifact directory, creating or overwriting its four files.
 
+    An existing artifact directory is overwritten in place. A non-empty directory that is *not* an
+    artifact is refused, so a mistyped output path cannot scatter files into someone's home or
+    source directory.
+
     Args:
         path: Destination directory, conventionally ending in ``.slaw``.
         manifest: Manifest contents.
@@ -113,8 +117,16 @@ def write_artifact(
 
     Returns:
         The resolved artifact path.
+
+    Raises:
+        ArtifactError: If ``path`` is a non-empty directory that is not already an artifact.
     """
     path = Path(path)
+    if path.exists() and any(path.iterdir()) and not (path / MANIFEST_FILE).is_file():
+        raise ArtifactError(
+            f"{path} already exists, is not empty, and is not an artifact directory (it has no "
+            f"{MANIFEST_FILE}). Refusing to write into it; choose a different output path."
+        )
     path.mkdir(parents=True, exist_ok=True)
     write_json(path / MANIFEST_FILE, manifest)
     write_json(path / FITS_FILE, fits)

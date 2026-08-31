@@ -292,6 +292,11 @@ class ScalingLawModel:
     def params(self, target: str) -> dict[str, float]:
         """Point-estimate parameters for one target, in human reading order.
 
+        These are in the *normalized* parameterization the fit uses, where each predictor is divided
+        by the reference scale in :attr:`observed_domain`. Exponents are unaffected by that choice
+        and can be read directly; amplitudes are on the normalized scale, and the artifact's
+        ``fits.json`` additionally records ``params_raw_scale`` for the raw-unit reading.
+
         Args:
             target: The target column name.
 

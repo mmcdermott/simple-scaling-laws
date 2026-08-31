@@ -168,3 +168,22 @@ def test_artifact_is_usable_without_the_original_data(tmp_path, multi_target_fra
     predictions = loaded.predict(POINTS)
     assert predictions.height == 3
     assert not predictions["test_loss__cross_entropy__median"].is_null().any()
+
+
+def test_saving_into_a_foreign_non_empty_directory_is_refused(tmp_path, saved):
+    """A mistyped output path must not scatter files into an unrelated directory."""
+    model, _ = saved
+    other = tmp_path / "not_an_artifact"
+    other.mkdir()
+    (other / "important.txt").write_text("do not clobber me")
+    with pytest.raises(ArtifactError, match="not an artifact directory"):
+        model.save(other)
+    assert (other / "important.txt").read_text() == "do not clobber me"
+
+
+def test_saving_into_an_empty_directory_is_allowed(tmp_path, saved):
+    """An empty directory is a perfectly ordinary destination."""
+    model, _ = saved
+    empty = tmp_path / "fresh.slaw"
+    empty.mkdir()
+    assert model.save(empty).is_dir()
