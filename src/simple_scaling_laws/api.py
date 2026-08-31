@@ -49,7 +49,7 @@ class ConfigError(ValueError):
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    """Read an optional YAML configuration file.
+    r"""Read an optional YAML configuration file.
 
     A configuration only ever needs to name the law; column roles are inferred unless the input
     table uses non-conventional names.
@@ -67,7 +67,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         >>> import tempfile
         >>> path = Path(tempfile.mkdtemp()) / "config.yaml"
         >>> _ = path.write_text(
-        ...     "law: separable-power\\ncolumns:\\n  training_run_id: run\\n"
+        ...     "law: separable-power\ncolumns:\n  training_run_id: run\n"
         ... )
         >>> load_config(path)
         {'law': 'separable-power', 'columns': {'training_run_id': 'run'}}
@@ -133,7 +133,7 @@ def _fit_target(
     per_run_var = observations.eval_var_independent / np.maximum(observations.n_eval, 1)
 
     if is_constant(y) or dataset.n_configurations < 2:
-        return _constant_target_fit(dataset, law, target, observations, y, n_draws)
+        return _constant_target_fit(dataset, law, target, observations, y, per_run_var, n_draws, seed)
 
     unweighted = np.ones_like(y)
     first = fit_curve(law, log_x, y, unweighted, bounds)
@@ -146,7 +146,9 @@ def _fit_target(
     )
 
     weights = compute_weights(components.run_var, per_run_var)
-    fit = fit_curve(law, log_x, y, weights, bounds, starts=[first.params, *_seed_from(law, log_x, y, weights, bounds)])
+    fit = fit_curve(
+        law, log_x, y, weights, bounds, starts=[first.params, *_seed_from(law, log_x, y, weights, bounds)]
+    )
     residuals = y - law.evaluate(fit.params, log_x)
     components = _variance_components(
         observations, residuals, leverage(law, fit.params, log_x, weights), per_run_var, law.n_params
@@ -195,29 +197,50 @@ def _constant_target_fit(
     target: str,
     observations: TargetObservations,
     y: np.ndarray,
+    per_run_var: np.ndarray,
     n_draws: int,
+    seed: int,
 ) -> tuple[TargetFit, Uncertainty, list[Note]]:
-    """Handle a target with no variation: an exact constant fit, no optimizer, no bootstrap.
+    """Handle a target with no estimable curve: an exact constant fit, no optimizer, no refits.
 
-    There is genuinely nothing to estimate here, so the honest answer is the constant itself with
-    no uncertainty about the curve -- accompanied by a loud warning, because a flat target usually
-    means a saturated metric or a mistake in the input rather than a real finding.
+    Two very different situations land here. A target that is genuinely flat -- a saturated metric,
+    or a mistake in the input -- has nothing at all to estimate. An experiment run at a *single*
+    scaling configuration has no curve either, but it does still say something useful: how much the
+    level varies from one trained model to the next. That part is estimated properly, so
+    ``predict`` at the observed scale still returns an honest interval and ``new-run`` still carries
+    training stochasticity. Only the scaling behavior is unavailable, and that is what the warning
+    says.
+
+    The offset's uncertainty comes from an ordinary nonparametric bootstrap over training runs,
+    which is exactly right here: with one configuration there is no design to preserve, so runs are
+    the sampling unit and resampling them directly needs no further assumptions.
     """
+    rng = np.random.default_rng(seed)
     fit_result = constant_fit(law, y)
+    resampled = y[rng.integers(0, y.size, size=(n_draws, y.size))]
+
+    eval_noise = float(np.mean(per_run_var))
+    resampled_var = resampled.var(axis=1, ddof=1) if y.size > 1 else np.zeros(n_draws)
+    run_sd_draws = np.sqrt(np.maximum(0.0, resampled_var - eval_noise))
+    run_var = max(0.0, float(np.var(y, ddof=1)) - eval_noise) if y.size > 1 else 0.0
+    deviations = y - float(np.mean(y)) if dataset.n_configurations < 2 and y.size > 1 else np.zeros(0)
+
     components = VarianceComponents(
         eval_var=observations.eval_var,
         eval_var_independent=observations.eval_var_independent,
-        run_var=0.0,
-        run_var_replicate=None,
+        run_var=run_var,
+        run_var_replicate=run_var if y.size > 1 else None,
         run_var_residual=None,
-        replicate_dof=0,
+        replicate_dof=max(0, y.size - 1) if dataset.n_configurations < 2 else 0,
         residual_dof=0,
-        source="none",
+        source="replicates" if run_var > 0 else "none",
     )
+    params = np.tile(fit_result.params, (n_draws, 1))
+    params[:, 0] = resampled.mean(axis=1)
     uncertainty = Uncertainty(
-        params=np.tile(fit_result.params, (n_draws, 1)),
-        run_sd=np.zeros(n_draws),
-        run_deviations=np.zeros(0),
+        params=params,
+        run_sd=run_sd_draws,
+        run_deviations=deviations,
         method="constant",
         n_failed=0,
     )
@@ -230,11 +253,13 @@ def _constant_target_fit(
         "constant_target",
         "warning",
         f"No scaling law could be estimated for {target!r} because {reason}. It is reported as a "
-        "constant with no uncertainty about the curve.",
+        "constant at the observed level; its exponents are zero and carry no meaning, and any "
+        "prediction at a different scale is unsupported.",
         {
             "target": target,
             "value": float(np.mean(y)),
             "n_configurations": dataset.n_configurations,
+            "n_runs": int(y.size),
         },
     )
     target_fit = TargetFit(
@@ -251,7 +276,7 @@ def _constant_target_fit(
             "n_starts": 0,
         },
         goodness_of_fit=diagnostics_mod.goodness_of_fit(
-            y, np.full_like(y, fit_result.params[0]), np.ones_like(y), law.n_params
+            y, np.full_like(y, fit_result.params[0]), np.ones_like(y), 1
         ),
         uncertainty_method="constant",
         n_failed_draws=0,
@@ -330,7 +355,8 @@ def fit(
         law: The scaling-law family, see :func:`simple_scaling_laws.laws.available_laws`.
         columns: Optional column-role overrides, e.g. ``{"training_run_id": "run"}``.
         primary_target: Optional explicit primary target; defaults to the single test loss.
-        config: Optional YAML path or mapping supplying any of the above. Explicit arguments win.
+        config: Optional YAML path or mapping supplying any of the above. It fills in only the
+            arguments left at their default value, so anything passed explicitly wins.
         n_draws: Number of bootstrap draws to retain per target.
         seed: Seed for every random draw, so a fit is exactly reproducible.
 
@@ -416,9 +442,7 @@ def fit(
     params = {target: fit.params for target, fit in fits.items()}
     diagnostics = {
         "metric_correlations": diagnostics_mod.metric_correlations(dataset, seed=seed),
-        "scaling_similarity": diagnostics_mod.scaling_similarity(
-            dataset, instance, params, list(fits)
-        ),
+        "scaling_similarity": diagnostics_mod.scaling_similarity(dataset, instance, params, list(fits)),
         "fit_quality": {target: fit.goodness_of_fit for target, fit in fits.items()},
         "uncertainty": {
             target: {

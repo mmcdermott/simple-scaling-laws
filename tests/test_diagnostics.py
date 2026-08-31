@@ -1,8 +1,8 @@
 """Behavior on degenerate, under-powered and misspecified experiments.
 
-The package's contract is that it still returns a fit whenever one is mathematically possible, and
-records everything it is unhappy about. These tests walk the realistic ways a small scaling
-experiment goes wrong and check that each is both survivable and reported.
+The package's contract is that it still returns a fit whenever one is mathematically possible, and records
+everything it is unhappy about. These tests walk the realistic ways a small scaling experiment goes wrong and
+check that each is both survivable and reported.
 """
 
 import numpy as np
@@ -126,12 +126,8 @@ def test_a_single_configuration_yields_a_constant_fit():
     model = fit(frame, n_draws=50, seed=0)
     assert model.fits["test_loss__ce"].uncertainty_method == "constant"
     assert "constant_target" in codes(model)
-    predictions = model.predict(
-        {"model_size__n_params": [1e7], "dataset_size__n_subjects": [1e4]}
-    )
-    assert predictions["test_loss__ce__median"][0] == pytest.approx(
-        model.params("test_loss__ce")["E"]
-    )
+    predictions = model.predict({"model_size__n_params": [1e7], "dataset_size__n_subjects": [1e4]})
+    assert predictions["test_loss__ce__median"][0] == pytest.approx(model.params("test_loss__ce")["E"])
 
 
 def test_a_saturated_metric_is_reported_as_constant(loss_frame):
@@ -139,9 +135,7 @@ def test_a_saturated_metric_is_reported_as_constant(loss_frame):
     frame = loss_frame.with_columns(test_metric__auroc=pl.lit(1.0))
     model = fit(frame, n_draws=100, seed=0)
     assert model.fits["test_metric__auroc"].uncertainty_method == "constant"
-    assert model.params("test_metric__auroc") == {
-        "E": 1.0, "A": 0.0, "alpha": 0.0, "B": 0.0, "beta": 0.0
-    }
+    assert model.params("test_metric__auroc") == {"E": 1.0, "A": 0.0, "alpha": 0.0, "B": 0.0, "beta": 0.0}
     assert "constant_target" in codes(model)
     # The other target is unaffected.
     assert model.params("test_loss__cross_entropy")["alpha"] == pytest.approx(0.3, abs=0.1)
@@ -223,3 +217,32 @@ def test_a_clean_experiment_raises_no_warnings():
     )
     model = fit(frame, n_draws=200, seed=0)
     assert codes(model) == set(), [str(note) for note in model.warnings]
+
+
+def test_a_single_configuration_still_estimates_run_variance():
+    """One scale gives no curve, but it does say how much one new model would vary."""
+    frame = simulate_runs(
+        {"test_loss__ce": TRUE_LOSS},
+        model_sizes=(1e7,),
+        dataset_sizes=(1e4,),
+        runs_per_config=25,
+        evaluations_per_run=6,
+        run_sd=0.10,
+        eval_sd=0.02,
+        seed=0,
+    )
+    model = fit(frame, n_draws=300, seed=0)
+    components = model.fits["test_loss__ce"].variance_components
+    assert np.sqrt(components["run_var"]) == pytest.approx(0.10, rel=0.5)
+
+    points = {"model_size__n_params": [1e7], "dataset_size__n_subjects": [1e4]}
+    mean = model.predict(points)
+    new_run = model.predict(points, kind="new-run")
+
+    def width(frame):
+        return float(frame["test_loss__ce__q975"][0] - frame["test_loss__ce__q025"][0])
+
+    # The level itself is uncertain (it is a mean of noisy runs), and a single new model is
+    # more uncertain still.
+    assert width(mean) > 0
+    assert width(new_run) > width(mean)

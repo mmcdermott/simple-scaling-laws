@@ -1,7 +1,7 @@
 """Round-tripping a fitted model through a ``.slaw`` artifact.
 
-The artifact is what the automated experiment platform actually stores and later reloads, so a
-loaded model must predict *identically* to the one that was saved -- not approximately.
+The artifact is what the automated experiment platform actually stores and later reloads, so a loaded model
+must predict *identically* to the one that was saved -- not approximately.
 """
 
 import json
@@ -74,9 +74,7 @@ def test_loaded_model_preserves_estimates_and_draws(saved):
         assert loaded.params(target) == pytest.approx(model.params(target))
         assert np.array_equal(loaded.draws[target].params, model.draws[target].params)
         assert np.array_equal(loaded.draws[target].run_sd, model.draws[target].run_sd)
-        assert np.array_equal(
-            loaded.draws[target].run_deviations, model.draws[target].run_deviations
-        )
+        assert np.array_equal(loaded.draws[target].run_deviations, model.draws[target].run_deviations)
     assert [w.code for w in loaded.warnings] == [w.code for w in model.warnings]
     assert loaded.diagnostics == model.diagnostics
 
@@ -148,7 +146,7 @@ def test_loading_an_incomplete_artifact_fails_clearly(saved):
     """A truncated artifact names the file it is missing."""
     _, path = saved
     (path / FITS_FILE).unlink()
-    with pytest.raises(ArtifactError, match="fits.json"):
+    with pytest.raises(ArtifactError, match=r"fits\.json"):
         ScalingLawModel.load(path)
 
 

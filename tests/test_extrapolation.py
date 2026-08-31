@@ -1,9 +1,9 @@
 """Annotation of points outside the observed scaling domain.
 
-Interpolation and extrapolation go through the same ``predict`` call -- the difference is reported,
-not enforced -- because the whole point of fitting a scaling law is to ask about scales you have not
-run yet. What the package owes the caller is a clear statement of which answers are extrapolations
-and how far out they reach.
+Interpolation and extrapolation go through the same ``predict`` call -- the difference is reported, not
+enforced -- because the whole point of fitting a scaling law is to ask about scales you have not run yet. What
+the package owes the caller is a clear statement of which answers are extrapolations and how far out they
+reach.
 """
 
 import numpy as np
@@ -33,7 +33,7 @@ def model():
 
 def _predict(model, points):
     """Predict without letting the extrapolation warning become a test failure."""
-    with pytest.warns(UserWarning) if _has_outside(model, points) else _no_warning():
+    with pytest.warns(UserWarning) if _has_outside(model, points) else _NoWarningRaised():
         return model.predict(points)
 
 
@@ -43,7 +43,7 @@ def _has_outside(model, points):
     return bool(model.domain_position(raw)[0].any())
 
 
-class _no_warning:
+class _NoWarningRaised:
     """A context manager that asserts no warning is raised."""
 
     def __enter__(self):
@@ -121,9 +121,7 @@ def test_extrapolated_intervals_are_wider_than_interior_ones(model):
         "dataset_size__n_subjects": [1e4, 1e4, 1e4],
     }
     predictions = _predict(model, points)
-    widths = (
-        predictions["test_loss__ce__q975"] - predictions["test_loss__ce__q025"]
-    ).to_list()
+    widths = (predictions["test_loss__ce__q975"] - predictions["test_loss__ce__q025"]).to_list()
     assert widths[0] < widths[1] < widths[2]
 
 

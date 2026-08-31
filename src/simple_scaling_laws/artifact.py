@@ -123,7 +123,9 @@ def write_artifact(
     return path
 
 
-def read_artifact(path: str | Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
+def read_artifact(
+    path: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, np.ndarray], dict[str, Any]]:
     """Read an artifact directory.
 
     Args:

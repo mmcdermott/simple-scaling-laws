@@ -1,10 +1,10 @@
 """Design validation, goodness of fit, and cross-metric diagnostics.
 
-Everything here is advisory: the package returns a fit whenever one is mathematically possible and
-records its objections rather than raising them, so an automated caller can decide how much to trust
-a prediction. Correlations between the primary loss and the other metrics are always computed on
-**run-level means**; computing them over raw evaluation rows would count the same trained model
-dozens of times and inflate both the estimate and its apparent precision.
+Everything here is advisory: the package returns a fit whenever one is mathematically possible and records its
+objections rather than raising them, so an automated caller can decide how much to trust a prediction.
+Correlations between the primary loss and the other metrics are always computed on **run-level means**;
+computing them over raw evaluation rows would count the same trained model dozens of times and inflate both
+the estimate and its apparent precision.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy import stats
 
-from .laws import EXPONENT, MAX_EXPONENT
+from .laws import EXPONENT
 from .notes import Note
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -31,12 +31,18 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: variation to judge the fit by, or to resample in the bootstrap.
 MIN_CONFIGURATIONS = 4
 
+#: Distinct levels a predictor needs before its exponent is identified at all. Restricted to one
+#: predictor, every law here reduces to ``E + A * x**-alpha``: three free parameters, so two points
+#: can always be fit exactly by infinitely many (E, A, alpha) triples.
+MIN_PREDICTOR_LEVELS = 3
+
 #: Absolute correlation between log predictors above which they are called collinear.
 COLLINEARITY_THRESHOLD = 0.95
 
-#: An exponent whose interval covers more than this fraction of its allowed range is called weakly
-#: identified.
-WEAK_IDENTIFICATION_FRACTION = 0.5
+#: An exponent is called weakly identified when its 95% interval is wider than this, or wider than
+#: the estimate itself. Real scaling exponents are well under one, so an interval half a unit wide
+#: is uninformative however large the estimate.
+WEAK_IDENTIFICATION_WIDTH = 0.5
 
 #: Ratio of residual-based to replicate-based run variance above which lack of fit is reported.
 LACK_OF_FIT_RATIO = 4.0
@@ -51,8 +57,8 @@ SIMILARITY_GRID_POINTS = 5
 def _pearson(a: np.ndarray, b: np.ndarray) -> float | None:
     """Pearson correlation, or ``None`` when either series has no variation.
 
-    Written out rather than delegated to ``numpy.corrcoef`` because the bootstrap calls it a
-    thousand times per target, where the wrapper overhead dominates the arithmetic.
+    Written out rather than delegated to ``numpy.corrcoef`` because the bootstrap calls it a thousand times
+    per target, where the wrapper overhead dominates the arithmetic.
     """
     if a.size < 3:
         return None
@@ -132,7 +138,27 @@ def design_notes(dataset: Dataset, law: LawInstance) -> list[Note]:
             )
         )
 
-    for role, columns in (("model_size", dataset.schema.model_size), ("dataset_size", dataset.schema.dataset_size)):
+    for column in law.predictors:
+        j = dataset.schema.predictors.index(column)
+        levels = int(np.unique(dataset.config_values[:, j]).size)
+        if 2 <= levels < MIN_PREDICTOR_LEVELS:
+            notes.append(
+                Note(
+                    "too_few_predictor_levels",
+                    "error",
+                    f"Predictor {column!r} was measured at only {levels} distinct values. Its "
+                    "exponent is not identified: two points can be fit exactly by any number of "
+                    f"different curves, so the fitted exponent, amplitude and offset are arbitrary "
+                    "and their intervals do not cover the truth. Add a third scale for this "
+                    "predictor.",
+                    {"predictor": column, "n_levels": levels, "required": MIN_PREDICTOR_LEVELS},
+                )
+            )
+
+    for role, columns in (
+        ("model_size", dataset.schema.model_size),
+        ("dataset_size", dataset.schema.dataset_size),
+    ):
         for column in columns:
             j = dataset.schema.predictors.index(column)
             if np.unique(dataset.config_values[:, j]).size < 2:
@@ -245,16 +271,22 @@ def fit_notes(
         if kind != EXPONENT:
             continue
         width = float(upper[i] - lower[i])
-        if width > WEAK_IDENTIFICATION_FRACTION * MAX_EXPONENT:
+        estimate = float(fit.params[i])
+        if width > max(WEAK_IDENTIFICATION_WIDTH, abs(estimate)):
             notes.append(
                 Note(
                     "weakly_identified_exponent",
                     "warning",
-                    f"Exponent {name!r} for {target!r} has a 95% interval of "
-                    f"[{lower[i]:.3g}, {upper[i]:.3g}], covering "
-                    f"{width / MAX_EXPONENT:.0%} of its allowed range. The data do not pin down how "
-                    "fast this predictor improves performance.",
-                    {"target": target, "parameter": name, "interval": [lower[i], upper[i]]},
+                    f"Exponent {name!r} for {target!r} is {estimate:.3g} with a 95% interval of "
+                    f"[{lower[i]:.3g}, {upper[i]:.3g}] -- wider than the estimate itself. The data "
+                    "do not pin down how fast this predictor improves performance, so predictions "
+                    "at new scales of it are little more than a guess.",
+                    {
+                        "target": target,
+                        "parameter": name,
+                        "estimate": estimate,
+                        "interval": [lower[i], upper[i]],
+                    },
                 )
             )
 
@@ -275,9 +307,7 @@ def fit_notes(
     return notes
 
 
-def goodness_of_fit(
-    y: np.ndarray, fitted: np.ndarray, weights: np.ndarray, n_params: int
-) -> dict[str, Any]:
+def goodness_of_fit(y: np.ndarray, fitted: np.ndarray, weights: np.ndarray, n_params: int) -> dict[str, Any]:
     """Summary fit quality on run-level means.
 
     Args:

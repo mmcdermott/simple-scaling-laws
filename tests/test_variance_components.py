@@ -1,9 +1,8 @@
 """Recovery of the two variance components, and of the difference between them.
 
-The package's central claim is that it distinguishes *training-run* stochasticity from
-*finite-evaluation-set* noise. These tests hold it to that: repeated evaluations of one trained
-model must not be counted as independent evidence about the scaling law, and repeated trained models
-at one scale must be.
+The package's central claim is that it distinguishes *training-run* stochasticity from *finite-evaluation-set*
+noise. These tests hold it to that: repeated evaluations of one trained model must not be counted as
+independent evidence about the scaling law, and repeated trained models at one scale must be.
 """
 
 import numpy as np
@@ -70,9 +69,9 @@ def test_run_variance_falls_back_to_residuals_without_replicates():
 def test_more_evaluations_do_not_masquerade_as_more_training_evidence():
     """Multiplying evaluation resamples must not shrink parameter intervals like new runs would.
 
-    Both fits below train exactly the same number of models; one simply scores each model on far
-    more bootstrap resamples. A fitter that treated evaluation rows as independent observations
-    would report intervals roughly ``sqrt(40 / 4)`` times narrower for the second fit.
+    Both fits below train exactly the same number of models; one simply scores each model on far more
+    bootstrap resamples. A fitter that treated evaluation rows as independent observations would report
+    intervals roughly ``sqrt(40 / 4)`` times narrower for the second fit.
     """
     full = simulate_runs(
         {"test_loss__ce": TRUE_LOSS},

@@ -1,10 +1,9 @@
 """Input reading, validation, and reduction of evaluation rows to run-level observations.
 
-The central statistical move of this package happens here: many bootstrap evaluation rows for one
-trained model are reduced to **one** observation (that run's mean) plus a count. That is what stops
-repeated evaluations of the same model from masquerading as independent training evidence. The
-spread *within* a run estimates evaluation noise; the spread *between* runs at the same scale
-estimates training-run noise.
+The central statistical move of this package happens here: many bootstrap evaluation rows for one trained
+model are reduced to **one** observation (that run's mean) plus a count. That is what stops repeated
+evaluations of the same model from masquerading as independent training evidence. The spread *within* a run
+estimates evaluation noise; the spread *between* runs at the same scale estimates training-run noise.
 """
 
 from __future__ import annotations
@@ -122,10 +121,10 @@ class TargetObservations:
     def eval_var_independent(self) -> float:
         """The part of the evaluation variance that averages away across runs.
 
-        When the same ``test_set_id`` resamples are reused across trained models, part of the
-        evaluation noise is *shared*: it shifts every run's mean in the same direction instead of
-        cancelling. Only the remaining, independent part is reduced by comparing runs, so only that
-        part belongs in the fitting weights.
+        When the same ``test_set_id`` resamples are reused across trained models, part of the evaluation noise
+        is *shared*: it shifts every run's mean in the same direction instead of cancelling. Only the
+        remaining, independent part is reduced by comparing runs, so only that part belongs in the fitting
+        weights.
         """
         rho = 0.0 if self.eval_pair_correlation is None else max(0.0, self.eval_pair_correlation)
         return self.eval_var * (1.0 - rho)

@@ -1,16 +1,17 @@
 """Discovery and validation of column roles in a scaling-law input table.
 
-The package is designed to need *no* schema configuration when the conventional
-``role__name`` prefixes are used. This module turns a list of column names into a
-:class:`Schema` describing which columns are identifiers, which are scale predictors, and which
-are fitting targets.
+The package is designed to need *no* schema configuration when the conventional ``role__name`` prefixes are
+used. This module turns a list of column names into a :class:`Schema` describing which columns are
+identifiers, which are scale predictors, and which are fitting targets.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Iterable, Mapping, Sequence
 
 #: Reserved identifier columns. Only ``training_run_id`` is required.
 ID_ROLES: tuple[str, ...] = ("training_run_id", "train_set_id", "test_set_id", "optimizer_seed")
@@ -60,9 +61,9 @@ class Target:
     def signed_amplitude(self) -> bool:
         """Whether the law's amplitudes may be negative for this target.
 
-        Losses use the conventional asymptotic-floor parameterization with non-negative amplitudes.
-        Metrics may increase with scale, so their amplitudes are free in sign and the curve can
-        approach its asymptote from below.
+        Losses use the conventional asymptotic-floor parameterization with non-negative amplitudes. Metrics
+        may increase with scale, so their amplitudes are free in sign and the curve can approach its asymptote
+        from below.
         """
         return not self.is_loss
 

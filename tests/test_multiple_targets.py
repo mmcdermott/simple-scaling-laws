@@ -1,8 +1,7 @@
 """Fitting every recognized target in one invocation.
 
-Fitting a metric costs almost nothing once the data are reduced to run means, so one call fits the
-test loss, the train loss and every alternative metric, each with its own parameters and its own
-uncertainty draws.
+Fitting a metric costs almost nothing once the data are reduced to run means, so one call fits the test loss,
+the train loss and every alternative metric, each with its own parameters and its own uncertainty draws.
 """
 
 import numpy as np
@@ -25,9 +24,7 @@ PARAMS = {
 @pytest.fixture(scope="module")
 def model():
     """One fit covering a loss, a train loss, two test metrics and a train metric."""
-    frame = simulate_runs(
-        PARAMS, runs_per_config=2, evaluations_per_run=4, run_sd=0.01, eval_sd=0.02, seed=0
-    )
+    frame = simulate_runs(PARAMS, runs_per_config=2, evaluations_per_run=4, run_sd=0.01, eval_sd=0.02, seed=0)
     return fit(frame, n_draws=200, seed=0)
 
 

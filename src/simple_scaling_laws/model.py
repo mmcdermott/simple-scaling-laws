@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -19,6 +18,7 @@ from .uncertainty import Uncertainty, from_arrays, to_arrays
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
+    from pathlib import Path
 
 #: Prediction quantiles reported when the caller does not choose.
 DEFAULT_QUANTILES: tuple[float, ...] = (0.025, 0.5, 0.975)
@@ -165,7 +165,7 @@ def raw_scale_params(law: LawInstance, params: np.ndarray, reference: np.ndarray
     """
     values = dict(zip(law.param_names, (float(v) for v in params), strict=True))
     exponents = params[law.n_linear :]
-    scales = {"multiplicative-power": float(np.prod(reference ** exponents))}
+    scales = {"multiplicative-power": float(np.prod(reference**exponents))}
     for i, name in enumerate(law.param_names[1 : law.n_linear]):
         if law.law == "separable-power":
             values[name] = values[name] * float(reference[i] ** exponents[i])
@@ -177,8 +177,8 @@ def raw_scale_params(law: LawInstance, params: np.ndarray, reference: np.ndarray
 class ScalingLawModel:
     """A fitted scaling law for every recognized target, with uncertainty.
 
-    Instances are produced by :func:`simple_scaling_laws.fit` and by :meth:`load`; they are not
-    normally constructed directly.
+    Instances are produced by :func:`simple_scaling_laws.fit` and by :meth:`load`; they are not normally
+    constructed directly.
     """
 
     def __init__(
@@ -253,9 +253,9 @@ class ScalingLawModel:
     def predictors(self) -> tuple[str, ...]:
         """Every predictor column the input declared, model-size first.
 
-        Predictions must supply all of them. A predictor that took a single value across the whole
-        experiment is not part of the fitted law -- there was nothing to estimate -- but it is still
-        tracked here so that predicting at a different value is flagged as extrapolation.
+        Predictions must supply all of them. A predictor that took a single value across the whole experiment
+        is not part of the fitted law -- there was nothing to estimate -- but it is still tracked here so that
+        predicting at a different value is flagged as extrapolation.
         """
         return self._domain_predictors
 
@@ -319,9 +319,7 @@ class ScalingLawModel:
             raise ValueError(f"level must be in (0, 1), got {level}")
         tail = (1.0 - level) / 2.0
         lower, upper = self._draws[target].quantiles([tail, 1.0 - tail])
-        by_name = {
-            name: (float(lower[i]), float(upper[i])) for i, name in enumerate(self._law.param_names)
-        }
+        by_name = {name: (float(lower[i]), float(upper[i])) for i, name in enumerate(self._law.param_names)}
         return {name: by_name[name] for name in self._law.display_names}
 
     def exponents(self, target: str) -> dict[str, float]:
@@ -532,9 +530,7 @@ class ScalingLawModel:
         Returns:
             The resolved artifact path.
         """
-        fits = {
-            target: fit.to_dict(self._law, self._reference) for target, fit in self._fits.items()
-        }
+        fits = {target: fit.to_dict(self._law, self._reference) for target, fit in self._fits.items()}
         draws: dict[str, np.ndarray] = {}
         for target, uncertainty in self._draws.items():
             for name, values in to_arrays(self._law, uncertainty).items():
@@ -558,9 +554,7 @@ class ScalingLawModel:
         draws = {}
         for name, fit in fits.items():
             arrays = {
-                key.split("/", 1)[1]: value
-                for key, value in draws_data.items()
-                if key.startswith(f"{name}/")
+                key.split("/", 1)[1]: value for key, value in draws_data.items() if key.startswith(f"{name}/")
             }
             draws[name] = from_arrays(law, arrays, fit.uncertainty_method, fit.n_failed_draws)
         return cls(manifest, schema, law, fits, draws, diagnostics)
@@ -580,13 +574,18 @@ def _format(value: float | None) -> str:
 def _run_noise(rng: np.random.Generator, draws: Uncertainty, shape: tuple[int, int]) -> np.ndarray:
     """Training-run noise for a ``new-run`` prediction.
 
-    When enough run-level deviations were actually observed, they are resampled directly, so the
-    shape of the training-run distribution is taken from the data rather than assumed. Otherwise
-    there is nothing to resample and the noise falls back to a normal draw whose scale is itself
-    drawn from the bootstrap, which at least carries the uncertainty in that scale.
+    The *shape* of the distribution comes from the data whenever enough run-level deviations were actually
+    observed -- they are standardized and resampled, so no normality is assumed -- while the *scale* always
+    comes from the bootstrap draws, so uncertainty about how variable training runs are is carried rather than
+    fixed at its point estimate. With too few observed deviations to resample there is no empirical shape to
+    borrow, and the noise falls back to a normal draw at the same bootstrapped scale.
     """
-    if draws.run_deviations.size >= MIN_DEVIATIONS_FOR_RESAMPLING:
-        return rng.choice(draws.run_deviations, size=shape, replace=True)
+    deviations = draws.run_deviations
+    if deviations.size >= MIN_DEVIATIONS_FOR_RESAMPLING:
+        spread = float(np.std(deviations, ddof=1))
+        if spread > 0:
+            standardized = deviations / spread
+            return rng.choice(standardized, size=shape, replace=True) * draws.run_sd[:, None]
     return rng.normal(0.0, 1.0, size=shape) * draws.run_sd[:, None]
 
 
@@ -602,8 +601,7 @@ def _points_frame(points: Any, predictors: Sequence[str]) -> pl.DataFrame:
     missing = [name for name in predictors if name not in frame.columns]
     if missing:
         raise PredictionError(
-            f"Prediction points are missing predictor column(s) {missing}. Expected "
-            f"{list(predictors)}."
+            f"Prediction points are missing predictor column(s) {missing}. Expected {list(predictors)}."
         )
     if POINT_ID not in frame.columns:
         frame = frame.with_row_index(POINT_ID).with_columns(pl.col(POINT_ID).cast(pl.String))

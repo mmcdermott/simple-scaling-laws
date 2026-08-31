@@ -1,12 +1,11 @@
 """Cross-metric diagnostics computed at the right level of aggregation.
 
-The question these answer is "do the loss and the metric move together *across trained models*".
-Answering it over raw evaluation rows instead counts each trained model once per bootstrap resample
-and lets shared test-set noise masquerade as a relationship between the metrics.
+The question these answer is "do the loss and the metric move together *across trained models*". Answering it
+over raw evaluation rows instead counts each trained model once per bootstrap resample and lets shared test-
+set noise masquerade as a relationship between the metrics.
 """
 
 import polars as pl
-import pytest
 
 from simple_scaling_laws import fit
 
@@ -17,10 +16,9 @@ AUROC_PARAMS = {"E": 0.92, "A": -0.15, "alpha": 0.4, "B": -0.08, "beta": 0.3}
 def _shared_noise_frame() -> pl.DataFrame:
     """Six runs whose metrics are uncorrelated across models but share strong test-set noise.
 
-    Every trained model is scored on the same five bootstrap resamples. A resample that happens to
-    be easy lowers the loss and raises the metric for *every* model at once. Across trained models
-    the two are exactly uncorrelated by construction; across evaluation rows they look strongly,
-    and spuriously, related.
+    Every trained model is scored on the same five bootstrap resamples. A resample that happens to be easy
+    lowers the loss and raises the metric for *every* model at once. Across trained models the two are exactly
+    uncorrelated by construction; across evaluation rows they look strongly, and spuriously, related.
     """
     loss_by_run = [2.0, 1.9, 1.8, 1.7, 1.6, 1.5]
     metric_by_run = [0.81, 0.79, 0.80, 0.80, 0.79, 0.81]

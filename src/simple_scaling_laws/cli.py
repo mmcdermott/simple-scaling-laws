@@ -17,8 +17,6 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import polars as pl
-
 from .api import fit as fit_model
 from .artifact import package_version
 from .laws import DEFAULT_LAW, available_laws
@@ -27,6 +25,8 @@ from .uncertainty import DEFAULT_DRAWS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
+
+    import polars as pl
 
 
 class CLIError(ValueError):
@@ -207,7 +207,12 @@ def _run_fit(args: argparse.Namespace) -> int:
         seed=args.seed,
     )
     path = model.save(args.output)
-    if not args.quiet:
+    if args.quiet:
+        # Even a quiet run must not swallow an objection serious enough to invalidate the fit.
+        for note in model.warnings:
+            if note.severity == "error":
+                print(f"error: {note.code}: {note.message}", file=sys.stderr)
+    else:
         print(model.summary())
         print(f"\nwrote {path}")
     return 0

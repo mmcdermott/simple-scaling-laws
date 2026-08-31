@@ -140,9 +140,7 @@ def test_unknown_primary_target_is_rejected():
 
 def test_primary_target_falls_back_by_role_priority():
     """Without a test loss, the highest-priority available role supplies the primary target."""
-    schema = discover_schema(
-        ["training_run_id", "model_size__n", "dataset_size__d", "test_metric__auroc"]
-    )
+    schema = discover_schema(["training_run_id", "model_size__n", "dataset_size__d", "test_metric__auroc"])
     assert schema.primary_target == "test_metric__auroc"
 
 

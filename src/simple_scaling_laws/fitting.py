@@ -1,11 +1,11 @@
 """Point estimation of a scaling law and of the two variance components.
 
-Fitting happens on **run-level means**, weighted by how precisely each mean is known. The
-optimization exploits the fact that every law in this package is linear in its offset and
-amplitudes: for any candidate exponent vector the remaining parameters are solved exactly by
-bounded linear least squares, so a coarse grid over exponents gives excellent starting points and
-the nonlinear optimizer only has to polish them. This is far more reliable at small sample sizes
-than random multistart, and it is fast enough to redo thousands of times inside the bootstrap.
+Fitting happens on **run-level means**, weighted by how precisely each mean is known. The optimization
+exploits the fact that every law in this package is linear in its offset and amplitudes: for any candidate
+exponent vector the remaining parameters are solved exactly by bounded linear least squares, so a coarse grid
+over exponents gives excellent starting points and the nonlinear optimizer only has to polish them. This is
+far more reliable at small sample sizes than random multistart, and it is fast enough to redo thousands of
+times inside the bootstrap.
 """
 
 from __future__ import annotations
@@ -42,8 +42,11 @@ MAX_REFINEMENTS = 5
 AMPLITUDE_BOUND_FACTOR = 50.0
 OFFSET_BOUND_FACTOR = 50.0
 
-#: Largest permitted ratio between the largest and smallest fitting weight.
-MAX_WEIGHT_RATIO = 100.0
+#: Largest permitted ratio between the largest and smallest fitting weight. When the run-level
+#: variance estimates to exactly zero -- which happens readily with two or three replicate runs --
+#: the weights would otherwise be proportional to each run's evaluation count, which is precisely
+#: the confusion between evaluation effort and training evidence this package exists to prevent.
+MAX_WEIGHT_RATIO = 10.0
 
 #: Replicate degrees of freedom required before the replicate-based run-variance estimate is
 #: preferred over the residual-based one.
@@ -91,9 +94,9 @@ class Bounds:
         pinned = []
         for value, low, high, name in zip(params, self.lower, self.upper, names, strict=True):
             width = max(abs(high - low), 1.0)
-            if np.isfinite(low) and abs(value - low) <= BOUND_TOLERANCE * width:
-                pinned.append(name)
-            elif np.isfinite(high) and abs(value - high) <= BOUND_TOLERANCE * width:
+            at_low = np.isfinite(low) and abs(value - low) <= BOUND_TOLERANCE * width
+            at_high = np.isfinite(high) and abs(value - high) <= BOUND_TOLERANCE * width
+            if at_low or at_high:
                 pinned.append(name)
         return tuple(pinned)
 
@@ -126,7 +129,11 @@ def parameter_bounds(law: LawInstance, y: np.ndarray, signed_amplitude: bool) ->
     """
     y = np.asarray(y, dtype=float)
     spread = float(y.max() - y.min())
-    scale = max(spread, 1e-8 * (1.0 + float(np.abs(y).mean())))
+    # The box must admit an asymptote well below everything observed: a slowly scaling loss can sit
+    # at 2.0 with a spread of 0.01 and still have its true floor near zero, which a box derived from
+    # the spread alone would exclude. Tying the scale to the magnitude of the target as well keeps
+    # that reachable.
+    scale = max(spread, 0.1 * float(np.abs(y).mean()), 1e-8)
     lower, upper = [], []
     for kind in law.param_kinds:
         match kind:
@@ -198,9 +205,7 @@ class GridSeeder:
         self.bounds = bounds
         self.sqrt_w = np.sqrt(np.asarray(weights, dtype=float))
         self.exponents = _exponent_grid(law.n_exponents)
-        self.designs = [
-            self.sqrt_w[:, None] * law.design(exponents, log_x) for exponents in self.exponents
-        ]
+        self.designs = [self.sqrt_w[:, None] * law.design(exponents, log_x) for exponents in self.exponents]
         self.pseudo_inverses = [np.linalg.pinv(design) for design in self.designs]
         self.low = bounds.lower[: law.n_linear]
         self.high = bounds.upper[: law.n_linear]

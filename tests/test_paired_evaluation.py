@@ -1,9 +1,9 @@
 """Recognition of paired evaluation structure.
 
-When the same bootstrap resample is scored against several trained models, the evaluation noise it
-contributes is *shared*: it shifts every model's score in the same direction rather than averaging
-away. The package detects that from the reused ``test_set_id`` values and reports it, and excludes
-the shared part from the noise it believes comparing runs can cancel.
+When the same bootstrap resample is scored against several trained models, the evaluation noise it contributes
+is *shared*: it shifts every model's score in the same direction rather than averaging away. The package
+detects that from the reused ``test_set_id`` values and reports it, and excludes the shared part from the
+noise it believes comparing runs can cancel.
 """
 
 import numpy as np
@@ -131,7 +131,7 @@ def test_partial_pairing_uses_only_shared_resamples():
 
 def test_pairing_does_not_change_the_point_estimate():
     """Detecting pairing informs the weights and diagnostics, not the curve's functional fit."""
-    common = dict(runs_per_config=2, evaluations_per_run=20, run_sd=0.02, eval_sd=0.04, seed=0)
+    common = {"runs_per_config": 2, "evaluations_per_run": 20, "run_sd": 0.02, "eval_sd": 0.04, "seed": 0}
     paired = fit(
         simulate_runs({"test_loss__ce": TRUE_LOSS}, shared_eval_fraction=0.0, **common),
         n_draws=100,

@@ -1,8 +1,8 @@
 """Property-based tests of the numerical and structural invariants.
 
-These check the things that must hold for *every* input rather than for a chosen example: the
-analytic derivatives really are the derivatives, the vectorized and scalar evaluators agree, weights
-stay bounded, serialization is total, and a loss law really is monotone in scale.
+These check the things that must hold for *every* input rather than for a chosen example: the analytic
+derivatives really are the derivatives, the vectorized and scalar evaluators agree, weights stay bounded,
+serialization is total, and a loss law really is monotone in scale.
 """
 
 import json
@@ -28,9 +28,7 @@ from simple_scaling_laws.schema import discover_schema
 
 LAW_NAMES = sorted(available_laws())
 
-finite_floats = st.floats(
-    min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False, width=32
-)
+finite_floats = st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False, width=32)
 positive_scales = st.floats(min_value=1e-3, max_value=1e3, allow_nan=False, allow_infinity=False)
 exponents = st.floats(min_value=0.0, max_value=MAX_EXPONENT, allow_nan=False, allow_infinity=False)
 
@@ -58,9 +56,7 @@ def test_analytic_jacobian_matches_finite_differences(name, n_model, n_dataset, 
     rng = np.random.default_rng(seed)
     n_points = max(3, len(scales) // max(1, law.n_exponents))
     log_x = np.log(rng.choice(np.asarray(scales), size=(n_points, len(law.predictors))))
-    params = np.concatenate(
-        [rng.uniform(-2.0, 2.0, law.n_linear), rng.uniform(0.0, 1.5, law.n_exponents)]
-    )
+    params = np.concatenate([rng.uniform(-2.0, 2.0, law.n_linear), rng.uniform(0.0, 1.5, law.n_exponents)])
 
     analytic = law.jacobian(params, log_x)
     numerical = np.zeros_like(analytic)
@@ -208,14 +204,10 @@ def test_quantile_suffixes_are_well_formed(q):
     """Every quantile gets a column-name-safe suffix, and only the endpoints get words."""
     suffix = quantile_suffix(q)
     assert suffix.isidentifier()
-    assert (suffix in NAMED_QUANTILES.values()) == any(
-        abs(q - value) < 5e-4 for value in NAMED_QUANTILES
-    )
+    assert (suffix in NAMED_QUANTILES.values()) == any(abs(q - value) < 5e-4 for value in NAMED_QUANTILES)
 
 
-@given(
-    quantiles=st.lists(st.floats(0.0, 1.0, allow_nan=False), min_size=2, max_size=8, unique=True)
-)
+@given(quantiles=st.lists(st.floats(0.0, 1.0, allow_nan=False), min_size=2, max_size=8, unique=True))
 @settings(max_examples=100, deadline=None)
 def test_distinct_quantiles_get_distinct_suffixes(quantiles):
     """Two quantiles that differ at three decimals must not collide into one column."""
@@ -293,9 +285,7 @@ def test_constant_detection_agrees_with_the_observed_spread(values):
         assert np.ptp(array) > 0
 
 
-@given(
-    name=st.sampled_from(LAW_NAMES), n_model=st.integers(1, 3), n_dataset=st.integers(0, 3)
-)
+@given(name=st.sampled_from(LAW_NAMES), n_model=st.integers(1, 3), n_dataset=st.integers(0, 3))
 @settings(max_examples=100, deadline=None)
 def test_law_structure_is_self_consistent_and_round_trips(name, n_model, n_dataset):
     """Names, kinds and the linear/nonlinear split must stay in agreement, and survive saving."""

@@ -12,6 +12,11 @@ jobs:
   run_tests_ubuntu:
     runs-on: ubuntu-latest
 
+    # Hoisted so the Codecov steps can test for its presence: the `secrets`
+    # context is not available in a step-level `if:`, but `env` is.
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
     strategy:
       fail-fast: false
 
@@ -36,12 +41,14 @@ jobs:
           --cov-report=term
           --junitxml=junit.xml
 
-      # Skip Codecov on Dependabot PRs: workflow runs from Dependabot do not
-      # have access to repository secrets (a deliberate GitHub security
-      # policy), so CODECOV_TOKEN is empty and the upload fails. Coverage on
-      # dependency bumps is not meaningful anyway.
+      # Skip Codecov unless a token is actually configured. Two cases have no
+      # token: Dependabot runs, which deliberately cannot read repository
+      # secrets, and a repository where Codecov has not been set up yet. In
+      # both, a tokenless upload fails with HTTP 400 and -- because
+      # `fail_ci_if_error` is on -- would redden an otherwise passing run.
+      # Add CODECOV_TOKEN in the repository settings to turn these back on.
       - name: Upload coverage to Codecov
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && env.CODECOV_TOKEN != ''
         uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -50,7 +57,7 @@ jobs:
           verbose: true
 
       - name: Upload test results to Codecov
-        if: ${{ !cancelled() && github.actor != 'dependabot[bot]' }}
+        if: ${{ !cancelled() && github.actor != 'dependabot[bot]' && env.CODECOV_TOKEN != '' }}
         uses: codecov/test-results-action@v1.2.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

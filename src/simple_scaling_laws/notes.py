@@ -1,8 +1,8 @@
 """Structured, machine-readable warnings carried through fitting and into the saved artifact.
 
-The package always returns a fit when one is mathematically possible; anything it is unhappy about
-is recorded here instead of raised, so an automated caller can inspect the reasons a prediction
-should be distrusted rather than parsing log text.
+The package always returns a fit when one is mathematically possible; anything it is unhappy about is recorded
+here instead of raised, so an automated caller can inspect the reasons a prediction should be distrusted
+rather than parsing log text.
 """
 
 from __future__ import annotations

@@ -17,9 +17,7 @@ PARAMS = {
 @pytest.fixture
 def workspace(tmp_path):
     """A directory containing an input table and a set of prediction points."""
-    frame = simulate_runs(
-        PARAMS, runs_per_config=2, evaluations_per_run=4, run_sd=0.01, eval_sd=0.02, seed=0
-    )
+    frame = simulate_runs(PARAMS, runs_per_config=2, evaluations_per_run=4, run_sd=0.01, eval_sd=0.02, seed=0)
     frame.write_parquet(tmp_path / "runs.parquet")
     pl.DataFrame(
         {

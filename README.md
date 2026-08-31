@@ -83,9 +83,9 @@ Prediction returns a dataframe, so plotting is whatever you already use:
 ...         f"[{row['test_loss__cross_entropy__q025']:.3f}, "
 ...         f"{row['test_loss__cross_entropy__q975']:.3f}]"
 ...     )
-current    interpolation  2.854 [2.843, 2.867]
-10x-model  extrapolation  2.365 [2.341, 2.389]
-10x-data   extrapolation  2.486 [2.463, 2.508]
+current    interpolation  2.854 [2.833, 2.875]
+10x-model  extrapolation  2.364 [2.321, 2.406]
+10x-data   extrapolation  2.485 [2.446, 2.525]
 
 ```
 
@@ -188,12 +188,20 @@ their evaluation residuals is estimated and reported; only the part of evaluatio
 shared is treated as averaging away when runs are compared.
 
 **Uncertainty is a wild cluster bootstrap over configurations.** Residuals around the fitted curve
-are leverage-corrected and re-signed with Webb's six-point weights, drawn once per *configuration* so
-that a scale's shared lack of fit is preserved rather than averaged away. This was chosen because it
-is assumption-free about the error distribution, stays valid with the four-to-a-dozen configurations
-a real scaling experiment has, keeps the `(N, D)` design fixed instead of resampling it into
+are corrected and re-signed with Webb's six-point weights, drawn once per *configuration* so that a
+scale's shared lack of fit is preserved rather than averaged away. This was chosen because it is
+assumption-free about the error distribution, stays valid with the four-to-a-dozen configurations a
+real scaling experiment has, keeps the `(N, D)` design fixed instead of resampling it into
 degeneracy, and is conservative: residuals carry the law's own misspecification into the intervals.
 Draws -- not quantiles -- are stored, so any summary can be computed later.
+
+**The intervals are calibrated against simulation, not asserted.** Resampling residuals naively
+produces intervals that are badly too narrow at these sample sizes: generating from a known law and
+counting how often the nominal 95% intervals contained it gave **74%** at nine configurations and
+**87%** at sixteen. Two corrections fix it -- a degrees-of-freedom factor for the parameters the fit
+consumed at the level the bootstrap resamples at, and a Student's-t rather than normal reference for
+the interval endpoints -- and take measured coverage to **91-95%** across the designs this package
+targets. `tests/test_coverage.py` re-measures this on every CI run, so it cannot silently regress.
 
 **Correlations are computed across runs.** Loss/metric correlations use run-level means, with
 intervals from resampling configurations. The naive evaluation-row correlation is reported alongside
@@ -303,15 +311,25 @@ of raising them, so an automated caller can decide how much to trust a predictio
 ...     print(note.code, "-", note.severity)
 underdetermined - error
 too_few_configurations - warning
+too_few_predictor_levels - error
+too_few_predictor_levels - error
 single_run_per_configuration - warning
 parametric_uncertainty - warning
 
 ```
 
 Detected conditions include: too few distinct configurations, fewer configurations than parameters,
-a predictor held fixed, collinear predictors, a single run per configuration, no repeated
-evaluations, optimizer non-convergence, parameters pinned to a bound, weakly identified exponents,
-lack of fit, a constant target, and extrapolation at predict time.
+**a predictor measured at fewer than three distinct scales**, a predictor held fixed, collinear
+predictors, a single run per configuration, no repeated evaluations, optimizer non-convergence,
+parameters pinned to a bound, weakly identified exponents, lack of fit, a constant target, no
+uncertainty information at all, and extrapolation at predict time.
+
+The three-scales rule deserves its own note, because it is the one failure widening cannot rescue.
+Restricted to a single predictor every law here reduces to `E + A·x^-α`: three free parameters, so
+two scales can be fit exactly by infinitely many different curves. A design with only two dataset
+sizes yields parameters that look plausible, intervals that look reasonable, and simulated coverage
+of **0-38%**. The package raises an `error`-severity `too_few_predictor_levels` note in **100%** of
+such fits -- it cannot give you the right answer, but it will not pretend to.
 
 ## Programmatic inspection
 

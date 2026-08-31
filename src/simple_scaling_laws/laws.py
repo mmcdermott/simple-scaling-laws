@@ -1,13 +1,13 @@
 """The built-in scaling-law family registry.
 
-Every law in this package has the same structure: it is **linear** in an offset and one or more
-amplitudes, and **nonlinear** only in its exponents. That structure is what makes the fitter small
-and robust -- given the exponents, the remaining parameters are solved exactly by (bounded) linear
-least squares, so the optimizer only ever has to search a low-dimensional, well-behaved space.
+Every law in this package has the same structure: it is **linear** in an offset and one or more amplitudes,
+and **nonlinear** only in its exponents. That structure is what makes the fitter small and robust -- given the
+exponents, the remaining parameters are solved exactly by (bounded) linear least squares, so the optimizer
+only ever has to search a low-dimensional, well-behaved space.
 
 Predictors are always supplied in *normalized* form (each divided by a reference scale, see
-:mod:`simple_scaling_laws.data`), so amplitudes are on the target's own scale and the exponents are
-unchanged by the normalization.
+:mod:`simple_scaling_laws.data`), so amplitudes are on the target's own scale and the exponents are unchanged
+by the normalization.
 """
 
 from __future__ import annotations
@@ -335,9 +335,7 @@ def available_laws() -> dict[str, str]:
     return {name: law.description for name, law in _LAWS.items()}
 
 
-def build_law(
-    law: str, model_size: Sequence[str], dataset_size: Sequence[str]
-) -> LawInstance:
+def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) -> LawInstance:
     """Instantiate a named law for a concrete set of predictor columns.
 
     Args:

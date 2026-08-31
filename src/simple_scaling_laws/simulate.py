@@ -1,9 +1,8 @@
 """Synthetic data generation from a known scaling law.
 
-This exists so the package can be tested against ground truth, and so the documentation can show a
-complete worked example without shipping a data file. It generates exactly the input shape the
-fitter expects: long over evaluation resamples, wide over metrics, with explicit run and test-set
-identifiers.
+This exists so the package can be tested against ground truth, and so the documentation can show a complete
+worked example without shipping a data file. It generates exactly the input shape the fitter expects: long
+over evaluation resamples, wide over metrics, with explicit run and test-set identifiers.
 """
 
 from __future__ import annotations
@@ -129,9 +128,7 @@ def simulate_runs(
     configs = list(itertools.product(model_sizes, dataset_sizes))
     reference = np.exp(np.log(np.array(configs, dtype=float)).mean(axis=0))
     shared = {
-        target: shared_rng.normal(
-            0.0, eval_sds[target] * np.sqrt(shared_eval_fraction), evaluations_per_run
-        )
+        target: shared_rng.normal(0.0, eval_sds[target] * np.sqrt(shared_eval_fraction), evaluations_per_run)
         for target in targets
     }
 
