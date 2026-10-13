@@ -579,7 +579,9 @@ class _BoundedRationalPower:
         )
 
     @staticmethod
-    def _components(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _components(
+        law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         n = len(law.predictors)
         scales, exponents = nonlinear[:n], nonlinear[n:]
         powers = np.exp(-log_x * exponents[None, :])
