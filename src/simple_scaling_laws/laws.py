@@ -21,8 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
 MAX_EXPONENT: float = 3.0
-
-OFFSET, AMPLITUDE, SIGNED_AMPLITUDE, EXPONENT = "offset", "amplitude", "signed_amplitude", "exponent"
+OFFSET, AMPLITUDE, EXPONENT = "offset", "amplitude", "exponent"
 
 
 class LawError(ValueError):
@@ -95,7 +94,6 @@ class LawInstance:
         return jac
 
     def raw_scale_params(self, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
-        """Restate parameters in raw predictor units."""
         return _RAW_SCALE[self.law](self, np.asarray(params, dtype=float), np.asarray(reference, dtype=float))
 
     def to_dict(self) -> dict[str, Any]:
@@ -216,24 +214,26 @@ class _MultiplicativePower:
     @staticmethod
     def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
         values = _raw_values(law, params)
-        scale = float(np.prod(reference ** params[law.n_linear :]))
-        values["A"] *= scale
+        values["A"] *= float(np.prod(reference ** params[law.n_linear :]))
         return values
 
 
 class _SeparableInteractionPower:
-    """Separable model/data powers plus a signed joint interaction power.
+    """Separable powers with a model/data interaction that can penalize the low-data regime.
 
     For one model-size predictor ``N`` and one dataset-size predictor ``D`` this is
-    ``E + A*N**-alpha + B*D**-beta + C*N**-gamma*D**-delta``.  The interaction is a generic
-    power-law extension motivated by the joint model/data dependence observed by Kaplan et al.
-    (2020); it is not a named law from that paper.
+    ``E + A*N**-alpha + B*D**-beta - C*N**-gamma*D**-delta``. For losses, all three amplitudes are
+    nonnegative. The negative interaction can therefore make larger models harmful at small ``D`` while
+    disappearing at large ``D``. Metrics retain the package's existing signed-amplitude behavior.
+
+    This is a generic power-law interaction motivated by the joint model/data dependence reported by
+    Kaplan et al. (2020), not a named law from that paper.
     """
 
     name: ClassVar[str] = "separable-interaction-power"
     description: ClassVar[str] = (
-        "E + A*N**-alpha + B*D**-beta + C*N**-gamma*D**-delta "
-        "(signed model/data interaction; exactly one model and one dataset predictor)"
+        "E + A*N**-alpha + B*D**-beta - C*N**-gamma*D**-delta "
+        "(model/data interaction; exactly one model and one dataset predictor)"
     )
 
     @staticmethod
@@ -245,7 +245,7 @@ class _SeparableInteractionPower:
             model_size=model_size,
             dataset_size=dataset_size,
             param_names=("E", "A", "B", "C", "alpha", "beta", "gamma", "delta"),
-            param_kinds=(OFFSET, AMPLITUDE, AMPLITUDE, SIGNED_AMPLITUDE, EXPONENT, EXPONENT, EXPONENT, EXPONENT),
+            param_kinds=(OFFSET, AMPLITUDE, AMPLITUDE, AMPLITUDE, EXPONENT, EXPONENT, EXPONENT, EXPONENT),
             exponent_predictor=(0, 1, 0, 1),
         )
 
@@ -257,7 +257,7 @@ class _SeparableInteractionPower:
         out[:, 0] = 1.0
         out[:, 1] = np.exp(-alpha * log_n)
         out[:, 2] = np.exp(-beta * log_d)
-        out[:, 3] = np.exp(-gamma * log_n - delta * log_d)
+        out[:, 3] = -np.exp(-gamma * log_n - delta * log_d)
         return out
 
     @staticmethod
@@ -267,7 +267,7 @@ class _SeparableInteractionPower:
         out[:, :, 0] = 1.0
         out[:, :, 1] = np.exp(-exponents[:, 0, None] * log_n[None, :])
         out[:, :, 2] = np.exp(-exponents[:, 1, None] * log_d[None, :])
-        out[:, :, 3] = np.exp(
+        out[:, :, 3] = -np.exp(
             -exponents[:, 2, None] * log_n[None, :] - exponents[:, 3, None] * log_d[None, :]
         )
         return out
@@ -277,6 +277,8 @@ class _SeparableInteractionPower:
         grad = np.empty((log_x.shape[0], 4), dtype=float)
         grad[:, 0] = -linear[1] * log_x[:, 0] * design[:, 1]
         grad[:, 1] = -linear[2] * log_x[:, 1] * design[:, 2]
+        # design[:, 3] is negative, so differentiating -C exp(-gamma log N - delta log D)
+        # gives -C * design[:, 3] * log(scale).
         grad[:, 2] = -linear[3] * log_x[:, 0] * design[:, 3]
         grad[:, 3] = -linear[3] * log_x[:, 1] * design[:, 3]
         return grad
