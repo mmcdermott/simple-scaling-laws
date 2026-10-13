@@ -1,13 +1,13 @@
 """The built-in scaling-law family registry.
 
-Every law in this package keeps its offset and amplitudes linear whenever possible. Conditional on
-its nonlinear parameters, the remaining coefficients can therefore be solved exactly by bounded
-linear least squares. This variable-projection structure is the main reason fitting remains stable
-with the small scaling grids the package targets.
+Every law in this package keeps its offset and amplitudes linear whenever possible. Conditional on its
+nonlinear parameters, the remaining coefficients can therefore be solved exactly by bounded linear least
+squares. This variable-projection structure is the main reason fitting remains stable with the small scaling
+grids the package targets.
 
 Predictors are always supplied in normalized form (each divided by a reference scale; see
-:mod:`simple_scaling_laws.data`). Law families own the algebra for converting fitted parameters back
-to raw predictor units.
+:mod:`simple_scaling_laws.data`). Law families own the algebra for converting fitted parameters back to raw
+predictor units.
 """
 
 from __future__ import annotations
@@ -137,9 +137,7 @@ class LawInstance:
         design = self.design(nonlinear, log_x)
         jac = np.empty((log_x.shape[0], self.n_params), dtype=float)
         jac[:, : self.n_linear] = design
-        jac[:, self.n_linear :] = _NONLINEAR_GRADS[self.law](
-            self, linear, nonlinear, design, log_x
-        )
+        jac[:, self.n_linear :] = _NONLINEAR_GRADS[self.law](self, linear, nonlinear, design, log_x)
         return jac
 
     def raw_scale_params(self, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
@@ -478,7 +476,9 @@ class _KaplanJointPower:
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
         if len(model_size) != 1 or len(dataset_size) != 1:
-            raise LawError("'kaplan-joint-power' requires exactly one model-size and one dataset-size predictor")
+            raise LawError(
+                "'kaplan-joint-power' requires exactly one model-size and one dataset-size predictor"
+            )
         return LawInstance(
             law=_KaplanJointPower.name,
             model_size=model_size,
@@ -509,7 +509,7 @@ class _KaplanJointPower:
         joint = n_term + ratio[:, None] * d_term
         out = np.empty((nonlinear.shape[0], log_x.shape[0], 2), dtype=float)
         out[:, :, 0] = 1.0
-        out[:, :, 1] = joint**beta[:, None]
+        out[:, :, 1] = joint ** beta[:, None]
         return out
 
     @staticmethod
