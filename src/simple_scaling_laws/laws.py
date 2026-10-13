@@ -365,11 +365,7 @@ class _SeparableInteractionPower:
         del nonlinear
         n_predictors = len(law.predictors)
         grad = np.empty((log_x.shape[0], 2 * n_predictors), dtype=float)
-        grad[:, :n_predictors] = (
-            -linear[None, 1 : 1 + n_predictors]
-            * log_x
-            * design[:, 1 : 1 + n_predictors]
-        )
+        grad[:, :n_predictors] = -linear[None, 1 : 1 + n_predictors] * log_x * design[:, 1 : 1 + n_predictors]
         grad[:, n_predictors:] = -linear[-1] * log_x * design[:, -1, None]
         return grad
 
