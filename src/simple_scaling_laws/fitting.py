@@ -1,11 +1,10 @@
 """Point estimation of a scaling law and of the two variance components.
 
 Fitting happens on **run-level means**, weighted by how precisely each mean is known. The optimization
-exploits variable projection: for any candidate nonlinear parameter vector, the offset and amplitudes
-are solved exactly by bounded linear least squares. A small, parameter-kind-aware grid gives stable
-starting points, and the nonlinear optimizer only has to polish the best few. This remains far more
-reliable at small sample sizes than unconstrained random multistart and is fast enough to repeat in
-the bootstrap.
+exploits variable projection: for any candidate nonlinear parameter vector, the offset and amplitudes are
+solved exactly by bounded linear least squares. A small, parameter-kind-aware grid gives stable starting
+points, and the nonlinear optimizer only has to polish the best few. This remains far more reliable at small
+sample sizes than unconstrained random multistart and is fast enough to repeat in the bootstrap.
 """
 
 from __future__ import annotations
@@ -97,8 +96,8 @@ class Bounds:
 def parameter_bounds(law: LawInstance, y: np.ndarray, signed_amplitude: bool) -> Bounds:
     """Data-driven box constraints for a law's parameters.
 
-    Exponents, shifts, and positive scale ratios are non-negative. Loss amplitudes are non-negative;
-    metric amplitudes may be signed. Offsets retain the same generous data-driven box as before.
+    Exponents, shifts, and positive scale ratios are non-negative. Loss amplitudes are non-negative; metric
+    amplitudes may be signed. Offsets retain the same generous data-driven box as before.
     """
     y = np.asarray(y, dtype=float)
     spread = float(y.max() - y.min())
@@ -162,9 +161,9 @@ def _solve_linear(a: np.ndarray, b: np.ndarray, low: np.ndarray, high: np.ndarra
 class GridSeeder:
     """Reusable variable-projection restarts for a fixed design, weights and bounds.
 
-    For each candidate nonlinear vector, the linear coefficients are solved exactly. The resulting
-    design matrices and pseudo-inverses are reusable across bootstrap draws because predictors and
-    fitting weights do not change.
+    For each candidate nonlinear vector, the linear coefficients are solved exactly. The resulting design
+    matrices and pseudo-inverses are reusable across bootstrap draws because predictors and fitting weights do
+    not change.
     """
 
     def __init__(self, law: LawInstance, log_x: np.ndarray, weights: np.ndarray, bounds: Bounds):
@@ -173,9 +172,7 @@ class GridSeeder:
         self.bounds = bounds
         self.sqrt_w = np.sqrt(np.asarray(weights, dtype=float))
         self.nonlinear = _nonlinear_grid(law)
-        self.designs = [
-            self.sqrt_w[:, None] * law.design(nonlinear, log_x) for nonlinear in self.nonlinear
-        ]
+        self.designs = [self.sqrt_w[:, None] * law.design(nonlinear, log_x) for nonlinear in self.nonlinear]
         self.pseudo_inverses = [np.linalg.pinv(design) for design in self.designs]
         self.low = bounds.lower[: law.n_linear]
         self.high = bounds.upper[: law.n_linear]

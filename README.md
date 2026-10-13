@@ -147,7 +147,7 @@ columns:
 
 ## What it fits
 
-Three law families, all linear in their offset and amplitudes and nonlinear only in their exponents:
+Five law families, all linear in their offset and amplitudes and nonlinear only in their exponents:
 
 ```pycon
 >>> from simple_scaling_laws import available_laws
@@ -156,6 +156,8 @@ Three law families, all linear in their offset and amplitudes and nonlinear only
 separable-power                E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
 multiplicative-power           E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
 separable-interaction-power    E + separable powers - C * joint power (model/data interaction with a low-scale penalty)
+shifted-separable-power        E + sum_i A_i * (x_i + s_i)**-alpha_i (shifted/M3-style powers)
+kaplan-joint-power             E + A * (N**-rho + R/D)**beta (Kaplan-style joint model/data law)
 
 ```
 

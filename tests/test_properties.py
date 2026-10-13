@@ -278,7 +278,9 @@ def test_discovery_finds_every_prefixed_column_and_ignores_the_rest(suffixes, ex
     assert len(schema.dataset_size) == len(suffixes)
     assert len(schema.targets) == len(suffixes)
     assert schema.primary_target.startswith("test_loss__")
-    assert all(extra_name not in schema.target_names and extra_name not in schema.predictors for extra_name in extra)
+    assert all(
+        extra_name not in schema.target_names and extra_name not in schema.predictors for extra_name in extra
+    )
 
 
 @given(values=st.lists(finite_floats, min_size=1, max_size=20))

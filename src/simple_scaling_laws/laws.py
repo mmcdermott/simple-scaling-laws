@@ -1,13 +1,13 @@
 """The built-in scaling-law family registry.
 
-Every law in this package keeps its offset and amplitudes linear whenever possible. Conditional on
-its nonlinear parameters, the remaining coefficients can therefore be solved exactly by bounded
-linear least squares. This variable-projection structure is the main reason fitting remains stable
-with the small scaling grids the package targets.
+Every law in this package keeps its offset and amplitudes linear whenever possible. Conditional on its
+nonlinear parameters, the remaining coefficients can therefore be solved exactly by bounded linear least
+squares. This variable-projection structure is the main reason fitting remains stable with the small scaling
+grids the package targets.
 
 Predictors are always supplied in normalized form (each divided by a reference scale; see
-:mod:`simple_scaling_laws.data`). Law families own the algebra for converting fitted parameters back
-to raw predictor units.
+:mod:`simple_scaling_laws.data`). Law families own the algebra for converting fitted parameters back to raw
+predictor units.
 """
 
 from __future__ import annotations
