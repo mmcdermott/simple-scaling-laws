@@ -147,27 +147,34 @@ columns:
 
 ## What it fits
 
-Six law families, all linear in their offset and amplitudes and nonlinear only in their exponents:
+Six law families. Each is linear in its offset and amplitudes, which are solved exactly, and
+nonlinear in a handful of other parameters -- exponents, and for the richer laws a shift or a ratio --
+which are searched:
 
 ```pycon
 >>> from simple_scaling_laws import available_laws
 >>> for name, description in available_laws().items():
-...     print(f"{name:<30} {description}")
-separable-power                E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
-multiplicative-power           E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
-separable-interaction-power    E + separable powers - C * joint power (model/data interaction with a low-scale penalty)
-shifted-separable-power        E + sum_i A_i * (x_i + s_i)**-alpha_i (shifted/M3-style powers)
-kaplan-joint-power             E + A * (N**-rho + R/D)**beta (Kaplan-style joint model/data law)
-bounded-rational-power         (E + I*g)/(1 + g), g=sum_i A_i*x_i**-alpha_i (bounded M4 lambda=1)
+...     print(f"{name}\n    {description}")
+separable-power
+    E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
+multiplicative-power
+    E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
+separable-interaction-power
+    E + sum_i A_i * x_i**-alpha_i - C * prod_i x_i**-gamma_i (separable terms minus a joint term)
+shifted-separable-power
+    E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite small-scale limit)
+kaplan-joint-power
+    E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
+bounded-rational-power
+    (E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small scale, floor E at large)
 
 ```
 
 With one model-size and one dataset-size column, `separable-power` is the conventional
-`E + A·N^-α + B·D^-β`. The interaction family extends this to
-`E + A·N^-α + B·D^-β - C·N^-γ·D^-δ`. For losses, `A`, `B`, and `C` are constrained non-negative.
-The negative joint term can therefore make increasing model size harmful when data are scarce while
-vanishing as data scale grows. This exact form is a package-level interaction extension motivated by
-the joint model/data dependence reported by Kaplan et al. (2020), not a named law from that paper.
+`E + A·N^-α + B·D^-β`. Start there. The other families each relax one specific assumption it makes,
+at the price of more parameters and a larger grid, and each has a section below saying when it is
+worth that price. A lower in-sample residual is not by itself a reason to prefer one: every richer
+law here can fit separable data at least as well as the separable law does.
 
 Losses are fit with non-negative amplitudes, which gives the usual "irreducible floor plus decaying
 terms" reading. Metrics get free-signed amplitudes so an increasing metric such as AUROC can approach
@@ -179,6 +186,228 @@ its asymptote from below:
 True
 
 ```
+
+### When model size and data interact
+
+`separable-power` makes the effect of model size the same at every dataset size. That is the
+assumption most likely to fail in a small-data experiment, where a larger model can be *worse* when
+data are scarce and better when they are not. `separable-interaction-power` adds one joint term to
+allow it:
+
+`E + A·N^-α + B·D^-β − C·N^-γ·D^-δ`
+
+The joint term is subtracted, and fades as either scale grows, so it bends the surface most where
+both are small. It is a package-level extension motivated by the model/data coupling in Kaplan et
+al. (2020), not a law named there.
+
+```pycon
+>>> truth = {"E": 1.0, "A": 2.0, "B": 3.0, "C": 1.5, "alpha": 0.3, "beta": 0.3, "gamma": 0.15, "delta": 0.3}
+>>> grid = {"model_sizes": (1e6, 1e7, 1e8, 1e9), "dataset_sizes": (1e3, 1e4, 1e5, 1e6)}
+>>> coupled = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     law="separable-interaction-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> interaction = fit(coupled, law="separable-interaction-power", n_draws=200, seed=0)
+>>> sweep = interaction.predict(
+...     {
+...         "model_size__n_params": [1e6, 1e7, 1e8, 1e9] * 2,
+...         "dataset_size__n_subjects": [1e3] * 4 + [1e6] * 4,
+...     }
+... )
+>>> losses = [round(v, 2) for v in sweep["test_loss__cross_entropy__median"]]
+>>> losses[:4]  # scarce data: the loss turns back up as the model grows
+[8.0, 7.25, 7.32, 7.66]
+>>> losses[4:]  # ample data: bigger is simply better
+[6.8, 4.26, 3.04, 2.46]
+
+```
+
+It costs three more parameters than the separable law -- eight for one model-size and one
+dataset-size column -- so it wants at least a 4x4 grid; on the 3x3 grid that suits the separable law
+it is reported as `too_few_configurations`. Measured on 4x4 designs, its nominal 95% prediction
+intervals covered the truth 92-98% of the time, inside the grid and a decade beyond it.
+
+When the data contain no interaction, the joint term has nothing of its own to fit and can only
+imitate the separable terms. The curve is still right, but the individual parameters -- the
+asymptote `E` included -- are an accident of the optimizer, and the fit says so:
+
+```pycon
+>>> separable = simulate_runs(
+...     {"test_loss__cross_entropy": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}},
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> overfit = fit(separable, law="separable-interaction-power", n_draws=200, seed=0)
+>>> note = next(note for note in overfit.warnings if note.code == "ill_conditioned_fit")
+>>> note.details["parameters"]
+['E', 'C']
+
+```
+
+Treat that note as the instruction to drop back to `separable-power`, which this law contains
+exactly at `C = 0`.
+
+### When the small end is not yet a power law
+
+A power law is a straight line on log-log axes all the way down, and diverges at zero scale. Real
+curves flatten toward something finite at the small end of an experiment, and those pre-asymptotic
+points drag a plain power law's exponent toward zero. `shifted-separable-power` puts a non-negative
+shift inside each power term, `E + A·(N + s_N)^-α + B·(D + s_D)^-β`, which gives the term a finite
+value at zero scale and leaves its large-scale behavior alone. This is the shifted form used by
+Bansal et al. (2022) and Zhai et al. (2022), catalogued as M3 by Caballero et al. (2022).
+
+The cost of ignoring a shift that is there is not subtle. Fitting the plain law to shifted data:
+
+```pycon
+>>> truth = {"E": 1.0, "A": 2.0, "B": 1.5, "alpha": 0.5, "beta": 0.4, "s_n_params": 0.3, "s_n_subjects": 0.2}
+>>> bent = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     law="shifted-separable-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> plain = fit(bent, law="separable-power", n_draws=200, seed=0)
+>>> shifted = fit(bent, law="shifted-separable-power", n_draws=200, seed=0)
+>>> {k: round(v, 2) for k, v in plain.params("test_loss__cross_entropy").items()}
+{'E': -15.81, 'A': 12.84, 'alpha': 0.04, 'B': 7.21, 'beta': 0.05}
+>>> [note.code for note in plain.warnings]
+['lack_of_fit']
+>>> {k: round(v, 2) for k, v in shifted.params("test_loss__cross_entropy").items()}
+{'E': 1.0, 'A': 1.99, 'B': 1.51, 'alpha': 0.5, 'beta': 0.39, 's_n_params': 0.3, 's_n_subjects': 0.19}
+
+```
+
+Two decades beyond the grid, where the true loss is 1.10, the plain law predicts a negative one and
+its interval does not reach the truth; the shifted law's does:
+
+```pycon
+>>> far = {"model_size__n_params": [1e11], "dataset_size__n_subjects": [1e8]}
+>>> for name, candidate in (("plain", plain), ("shifted", shifted)):
+...     row = candidate.predict(far).row(0, named=True)
+...     print(
+...         f"{name:<8} {row['test_loss__cross_entropy__median']:6.2f} "
+...         f"[{row['test_loss__cross_entropy__q025']:.2f}, {row['test_loss__cross_entropy__q975']:.2f}]"
+...     )
+plain     -1.33 [-2.18, -0.27]
+shifted    1.10 [1.06, 1.14]
+
+```
+
+`lack_of_fit` on a separable fit is therefore the cue to try this law. It needs **four** scales of
+every predictor rather than three -- with three there are two contrasts from which to learn an
+amplitude, an exponent and a shift -- and says so with an `error`-severity
+`too_few_predictor_levels` note if it does not get them. On data that are already a clean power law
+the shifts sit at zero and are reported as `parameter_at_bound`.
+
+### When one resource is the bottleneck
+
+`kaplan-joint-power` is the joint law of Kaplan et al. (2020), `E + A·(N^-ρ + R/D)^β`, with an
+irreducible floor `E` added. Whichever resource is scarcer sets the loss: with ample data it is a
+power law in model size (exponent `ρ·β`), with an ample model it is a power law in data (exponent
+`β`), and in between, adding more of the abundant resource does almost nothing.
+
+```pycon
+>>> truth = {"E": 1.0, "A": 2.0, "rho": 0.5, "beta": 0.6, "R": 1.0}
+>>> limited = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     law="kaplan-joint-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> kaplan = fit(limited, law="kaplan-joint-power", n_draws=200, seed=0)
+>>> {k: round(v, 2) for k, v in kaplan.params("test_loss__cross_entropy").items()}
+{'E': 1.01, 'A': 2.0, 'rho': 0.5, 'beta': 0.6, 'R': 1.0}
+>>> sweep = kaplan.predict(
+...     {
+...         "model_size__n_params": [1e6, 1e7, 1e8, 1e9, 1e10, 1e11] * 2,
+...         "dataset_size__n_subjects": [1e3] * 6 + [1e6] * 6,
+...     }
+... )
+>>> losses = [round(v, 2) for v in sweep["test_loss__cross_entropy__median"]]
+>>> losses[:6]  # scarce data: a hundred thousand times the model buys almost nothing
+[18.53, 17.42, 17.06, 16.94, 16.91, 16.89]
+>>> losses[6:]  # ample data: the model is the bottleneck, and scaling it pays
+[6.65, 3.86, 2.47, 1.79, 1.47, 1.33]
+
+```
+
+It is monotone in both resources, so it describes saturation, not a larger model being *worse*; for
+that, use the interaction law above. It is defined for exactly one model-size and one dataset-size
+column, and both must actually vary.
+
+Measured on 4x4 designs, the nominal 95% prediction intervals of both laws covered the truth
+88-100% of the time, inside the grid and a decade beyond it. On a 3x3 grid with two runs per
+configuration the Kaplan law's dropped to 78-85%, so prefer the larger grid.
+
+### When the experiment reaches down to chance
+
+Every law above grows without limit as scale shrinks. A real loss does not: a model trained on
+almost nothing sits at chance and stays there. `bounded-rational-power` has a plateau `I` at the
+small end as well as a floor `E` at the large one, and moves between them as a weighted average,
+`(E + I·g) / (1 + g)`, whose weight `g = A·N^-α + B·D^-β` is an ordinary separable sum of power
+terms. It is the `λ = 1` case of the M4 estimator of Alabdulmohsin, Neyshabur & Zhai (2022) -- the
+one case that can be written down in closed form, and so the one whose two limits the fitter can
+solve exactly rather than search for.
+
+```pycon
+>>> truth = {"E": 1.0, "I": 4.0, "A": 1.0, "B": 0.8, "alpha": 0.5, "beta": 0.4}
+>>> saturating = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     law="bounded-rational-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> bounded = fit(saturating, law="bounded-rational-power", n_draws=200, seed=0)
+>>> {k: round(v, 2) for k, v in bounded.params("test_loss__cross_entropy").items()}
+{'E': 1.03, 'I': 4.0, 'A': 1.01, 'B': 0.78, 'alpha': 0.49, 'beta': 0.41}
+
+```
+
+What it buys is a sane answer below the grid. Three decades under the smallest configuration the
+true loss is 3.99, just short of the plateau. The separable law, fit to the same runs, has nothing
+to stop it:
+
+```pycon
+>>> tiny = {"model_size__n_params": [1e3], "dataset_size__n_subjects": [1e0]}
+>>> for name, candidate in (("bounded", bounded), ("separable", fit(saturating, n_draws=200, seed=0))):
+...     row = candidate.predict(tiny).row(0, named=True)
+...     print(
+...         f"{name:<10} {row['test_loss__cross_entropy__median']:5.2f} "
+...         f"[{row['test_loss__cross_entropy__q025']:.2f}, {row['test_loss__cross_entropy__q975']:.2f}]"
+...     )
+bounded     3.99 [3.96, 4.01]
+separable   8.14 [5.06, 144.22]
+
+```
+
+The plateau is only identified if the experiment reaches far enough down to see the curve bend
+toward it. On data that are still a clean power law `I` runs off to its bound while the weights
+shrink to compensate, and the fit is reported as `ill_conditioned_fit`: use `separable-power`. Both
+limits are estimated, never assumed; for a metric confined to `[0, 1]` they are limits on the logit
+scale the metric is fit on. Its intervals covered the truth 82-98% of the time on 4x4 designs and
+75-82% on a 3x3 grid with two runs per configuration, so this law too wants the larger grid.
 
 ## Bounded metrics
 
@@ -479,12 +708,14 @@ parametric_uncertainty - warning
 Detected conditions include: too few distinct configurations, fewer configurations than parameters,
 **a predictor measured at fewer than three distinct scales**, a predictor held fixed, collinear
 predictors, a single run per configuration, no repeated evaluations, optimizer non-convergence,
-parameters pinned to a bound, weakly identified exponents, lack of fit, a constant target, no
+parameters pinned to a bound, weakly identified exponents, parameters that trade off against each
+other without changing the curve, lack of fit, a constant target, no
 uncertainty information at all, and extrapolation at predict time.
 
 The three-scales rule deserves its own note, because it is the one failure widening cannot rescue.
-Restricted to a single predictor every law here reduces to `E + A·x^-α`: three free parameters, so
-two scales can be fit exactly by infinitely many different curves. A design with only two dataset
+Restricted to a single predictor a power-law term is `E + A·x^-α`: three free parameters, so two
+scales can be fit exactly by infinitely many different curves. (A law that puts more on a predictor
+needs more scales of it, and the note says how many: four for `shifted-separable-power`.) A design with only two dataset
 sizes yields parameters that look plausible, intervals that look reasonable, and simulated coverage
 of **0-38%**. The package raises an `error`-severity `too_few_predictor_levels` note in **100%** of
 such fits -- it cannot give you the right answer, but it will not pretend to.
