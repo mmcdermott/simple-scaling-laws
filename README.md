@@ -147,19 +147,24 @@ columns:
 
 ## What it fits
 
-Two law families, both linear in their offset and amplitudes and nonlinear only in their exponents:
+Three law families, all linear in their offset and amplitudes and nonlinear only in their exponents:
 
 ```pycon
 >>> from simple_scaling_laws import available_laws
 >>> for name, description in available_laws().items():
-...     print(f"{name:<22} {description}")
-separable-power        E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
-multiplicative-power   E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
+...     print(f"{name:<30} {description}")
+separable-power                E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
+multiplicative-power           E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
+separable-interaction-power    E + separable powers - C * joint power (model/data interaction with a low-scale penalty)
 
 ```
 
 With one model-size and one dataset-size column, `separable-power` is the conventional
-`E + A·N^-α + B·D^-β`.
+`E + A·N^-α + B·D^-β`. The interaction family extends this to
+`E + A·N^-α + B·D^-β - C·N^-γ·D^-δ`. For losses, `A`, `B`, and `C` are constrained non-negative.
+The negative joint term can therefore make increasing model size harmful when data are scarce while
+vanishing as data scale grows. This exact form is a package-level interaction extension motivated by
+the joint model/data dependence reported by Kaplan et al. (2020), not a named law from that paper.
 
 Losses are fit with non-negative amplitudes, which gives the usual "irreducible floor plus decaying
 terms" reading. Metrics get free-signed amplitudes so an increasing metric such as AUROC can approach
