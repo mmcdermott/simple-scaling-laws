@@ -3,12 +3,14 @@
 import numpy as np
 import pytest
 
+from simple_scaling_laws import fit
 from simple_scaling_laws.laws import LawError, build_law
 from simple_scaling_laws.model import raw_scale_params
+from simple_scaling_laws.simulate import simulate_runs
 
 
 def test_broken_power_reduces_to_power_when_slope_change_is_zero():
-    """c1=0 nests the ordinary one-dimensional power law exactly."""
+    """C1=0 nests the ordinary one-dimensional power law exactly."""
     broken = build_law("broken-power", ["model_size__n"], [])
     ordinary = build_law("separable-power", ["model_size__n"], [])
     log_x = np.log(np.array([[0.1], [1.0], [10.0]]))
@@ -68,5 +70,67 @@ def test_broken_power_jacobian_matches_finite_difference():
 
 def test_broken_power_requires_one_predictor():
     """The conservative first BNSL implementation is intentionally one-dimensional."""
-    with pytest.raises(LawError, match="exactly one scale predictor"):
+    with pytest.raises(LawError, match="exactly one predictor"):
         build_law("broken-power", ["model_size__n"], ["dataset_size__d"])
+
+
+def test_the_break_is_confined_to_the_observed_range():
+    """A break outside the scales that were run cannot be told from no break at all."""
+    law = build_law("broken-power", ["model_size__n"], [])
+    narrow = law.nonlinear_specs(np.log(np.array([[0.1], [1.0], [10.0]])))
+    wide = law.nonlinear_specs(np.log(np.array([[1e-3], [1.0], [1e3]])))
+    for specs, low, high in ((narrow, 0.1, 10.0), (wide, 1e-3, 1e3)):
+        location, width = specs[2], specs[3]
+        assert (location.lower, location.upper) == pytest.approx((low, high))
+        assert all(location.lower < seed < location.upper for seed in location.grid)
+        assert width.upper == pytest.approx(np.log(high / low) / 2)
+        assert all(width.lower < seed < width.upper for seed in width.grid)
+
+
+def test_a_turnover_is_recovered_on_a_wide_sweep():
+    """The case the seed grid was sized for: with coarser seeds five of twelve of these went wrong."""
+    truth = {"E": 1.0, "A": 2.0, "c0": 0.3, "c1": -0.6, "d": 3.0, "f": 0.8}
+    sizes = tuple(10.0**k for k in range(6, 14))
+    for seed in range(6):
+        frame = simulate_runs(
+            {"test_loss__ce": truth},
+            model_sizes=sizes,
+            dataset_sizes=(),
+            law="broken-power",
+            runs_per_config=2,
+            evaluations_per_run=4,
+            run_sd=0.02,
+            eval_sd=0.03,
+            seed=seed,
+        )
+        model = fit(frame, law="broken-power", n_draws=20, seed=seed)
+        assert "lack_of_fit" not in {note.code for note in model.warnings}, seed
+        assert model.exponents("test_loss__ce")["c1"] == pytest.approx(-0.6, abs=0.1), seed
+
+
+def test_too_few_scales_is_an_error():
+    """Six parameters on one axis: five scales identify nothing, and the fit has to say so."""
+    frame = simulate_runs(
+        {"test_loss__ce": {"E": 1.0, "A": 2.0, "c0": 0.15, "c1": 0.5, "d": 1.0, "f": 1.0}},
+        model_sizes=tuple(10.0**k for k in range(6, 11)),
+        dataset_sizes=(),
+        law="broken-power",
+        runs_per_config=2,
+        evaluations_per_run=4,
+        run_sd=0.02,
+        eval_sd=0.03,
+        seed=0,
+    )
+    errors = {
+        note.code for note in fit(frame, law="broken-power", n_draws=20).warnings if note.severity == "error"
+    }
+    assert {"too_few_predictor_levels", "underdetermined"} <= errors
+
+
+def test_a_two_predictor_experiment_is_refused_with_a_reason():
+    """The law is for a sweep, and a grid has to be told so rather than silently collapsed."""
+    frame = simulate_runs(
+        {"test_loss__ce": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}}, seed=0
+    )
+    with pytest.raises(LawError, match="exactly one predictor"):
+        fit(frame, law="broken-power", n_draws=20)

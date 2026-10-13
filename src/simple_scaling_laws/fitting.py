@@ -1,10 +1,14 @@
 """Point estimation of a scaling law and of the two variance components.
 
 Fitting happens on **run-level means**, weighted by how precisely each mean is known. The optimization
-exploits variable projection: for any candidate nonlinear parameter vector, the offset and amplitudes are
-solved exactly by bounded linear least squares. A small, parameter-kind-aware grid gives stable starting
-points, and the nonlinear optimizer only has to polish the best few. This remains far more reliable at small
-sample sizes than unconstrained random multistart and is fast enough to repeat in the bootstrap.
+exploits the fact that every law in this package is linear in its offset and amplitudes: for any candidate
+value of its nonlinear parameters the remaining ones are solved exactly by bounded linear least squares, so a
+coarse grid over the nonlinear parameters gives excellent starting points and the nonlinear optimizer only has
+to polish them. This is far more reliable at small sample sizes than random multistart, and it is fast enough
+to redo thousands of times inside the bootstrap.
+
+Which values that grid holds, and what box each nonlinear parameter is confined to, is the law's business
+rather than the fitter's: see :meth:`simple_scaling_laws.laws.LawInstance.nonlinear_specs`.
 """
 
 from __future__ import annotations
@@ -16,48 +20,33 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.optimize import least_squares, lsq_linear
 
-from .laws import (
-    AMPLITUDE,
-    EXPONENT,
-    MAX_EXPONENT,
-    POSITIVE_SCALE,
-    SCALE,
-    SHIFT,
-    SIGNED_EXPONENT,
-    LawInstance,
-)
+from .laws import AMPLITUDE, LINEAR_KINDS, LawInstance
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
     from .data import TargetObservations
+    from .laws import NonlinearSpec
 
-#: Candidate exponent values used to seed the optimizer.
-EXPONENT_GRID: tuple[float, ...] = (0.01, 0.03, 0.08, 0.2, 0.5, 1.2)
-SIGNED_EXPONENT_GRID: tuple[float, ...] = (-1.2, -0.5, -0.2, -0.08, 0.0, 0.08, 0.2, 0.5, 1.2)
-
-#: Candidate normalized additive shifts. Zero recovers an ordinary power law.
-SHIFT_GRID: tuple[float, ...] = (0.0, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0)
-
-#: Candidate positive scale ratios, centered on the normalized reference scale.
-SCALE_GRID: tuple[float, ...] = (0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
-
-#: Conservative finite bounds for normalized shifts and ratios.
-MAX_SHIFT = 10.0
-MAX_SCALE = 100.0
-MIN_POSITIVE_SCALE = 1e-6
-
-#: Cap on nonlinear grid combinations evaluated for a law.
+#: Cap on the number of grid combinations evaluated when a law has many nonlinear parameters.
 MAX_GRID_POINTS = 256
 
 #: How many of the best grid starts are polished by the nonlinear optimizer.
 MAX_REFINEMENTS = 5
 
-#: Amplitude and offset bounds are this multiple of the observed spread of the target.
+#: Amplitude and offset bounds are this multiple of the observed spread of the target. They are
+#: generous but finite on purpose. ``E + A * x**-alpha`` has a notorious flat ridge along which
+#: ``alpha -> 0``, ``A -> +inf`` and ``E -> -inf`` while the curve barely changes; an unbounded box
+#: lets the optimizer crawl down it indefinitely, wasting time and returning meaningless
+#: parameters. A finite box stops the crawl and turns the degeneracy into a reported
+#: ``parameter_at_bound`` warning, which is what a caller actually needs to know.
 AMPLITUDE_BOUND_FACTOR = 50.0
 OFFSET_BOUND_FACTOR = 50.0
 
-#: Largest permitted ratio between the largest and smallest fitting weight.
+#: Largest permitted ratio between the largest and smallest fitting weight. When the run-level
+#: variance estimates to exactly zero -- which happens readily with two or three replicate runs --
+#: the weights would otherwise be proportional to each run's evaluation count, which is precisely
+#: the confusion between evaluation effort and training evidence this package exists to prevent.
 MAX_WEIGHT_RATIO = 10.0
 
 #: Replicate degrees of freedom required before the replicate-based run-variance estimate is
@@ -67,7 +56,8 @@ MIN_REPLICATE_DOF = 3
 #: Relative distance from a bound at which a parameter counts as pinned to it.
 BOUND_TOLERANCE = 1e-6
 
-#: Optimizer convergence tolerances and per-start evaluation budget.
+#: Optimizer convergence tolerances and per-start evaluation budget. The budget matters: on a
+#: degenerate target the trust-region solver will otherwise take thousands of vanishing steps.
 CONVERGENCE_TOLERANCE = 1e-10
 MAX_EVALUATIONS_PER_PARAM = 60
 
@@ -93,7 +83,15 @@ class Bounds:
         return np.clip(params, self.lower, self.upper)
 
     def at_bound(self, params: np.ndarray, names: Sequence[str]) -> tuple[str, ...]:
-        """Names of parameters sitting on a finite bound."""
+        """Names of parameters sitting on a finite bound.
+
+        Args:
+            params: The fitted parameter vector.
+            names: Parameter names, in parameter-vector order.
+
+        Returns:
+            The names of parameters within :data:`BOUND_TOLERANCE` of a finite bound.
+        """
         pinned = []
         for value, low, high, name in zip(params, self.lower, self.upper, names, strict=True):
             width = max(abs(high - low), 1.0)
@@ -104,68 +102,80 @@ class Bounds:
         return tuple(pinned)
 
 
-def parameter_bounds(law: LawInstance, y: np.ndarray, signed_amplitude: bool) -> Bounds:
+def parameter_bounds(
+    law: LawInstance, y: np.ndarray, signed_amplitude: bool, log_x: np.ndarray | None = None
+) -> Bounds:
     """Data-driven box constraints for a law's parameters.
 
-    Ordinary exponents, shifts, and scale ratios are non-negative. Signed slope changes can move in either
-    direction, and break locations or sharpnesses use a strictly positive lower bound. Loss amplitudes are
-    non-negative; metric amplitudes may be signed. Offsets retain the same generous data-driven box as before.
+    Exponents are always non-negative, so every term decays as scale grows. Loss amplitudes are
+    non-negative too, which gives the conventional "irreducible floor plus decaying terms" reading.
+    Metric amplitudes are free in sign so that an increasing metric can approach its asymptote from
+    below. The remaining linear bounds are generous multiples of the observed spread; they exist to
+    keep the optimizer in a numerically sane region, and a parameter that lands on one is reported.
+
+    The nonlinear bounds come from the law (:meth:`~simple_scaling_laws.laws.LawInstance.nonlinear_specs`),
+    which may place them relative to the observed predictors.
+
+    Args:
+        law: The instantiated law.
+        y: Observed target values, used to set the scale.
+        signed_amplitude: Whether amplitudes may be negative.
+        log_x: Log-normalized predictors, for laws whose nonlinear bounds depend on the design.
+
+    Returns:
+        The :class:`Bounds` for this law and target.
+
+    Examples:
+        >>> from .laws import build_law
+        >>> law = build_law("separable-power", ["model_size__n"], ["dataset_size__d"])
+        >>> bounds = parameter_bounds(law, np.array([1.0, 2.0, 3.0]), signed_amplitude=False)
+        >>> bounds.lower.round(3)
+        array([-99.,   0.,   0.,   0.,   0.])
+        >>> bounds.at_bound(np.array([0.0, 0.0, 1.0, 0.5, 0.5]), law.param_names)
+        ('A',)
     """
     y = np.asarray(y, dtype=float)
     spread = float(y.max() - y.min())
+    # The box must admit an asymptote well below everything observed: a slowly scaling loss can sit
+    # at 2.0 with a spread of 0.01 and still have its true floor near zero, which a box derived from
+    # the spread alone would exclude. Tying the scale to the magnitude of the target as well keeps
+    # that reachable.
     scale = max(spread, 0.1 * float(np.abs(y).mean()), 1e-8)
     lower, upper = [], []
     for kind in law.param_kinds:
-        match kind:
-            case _ if kind == EXPONENT:
-                lower.append(0.0)
-                upper.append(MAX_EXPONENT)
-            case _ if kind == SIGNED_EXPONENT:
-                lower.append(-MAX_EXPONENT)
-                upper.append(MAX_EXPONENT)
-            case _ if kind == SHIFT:
-                lower.append(0.0)
-                upper.append(MAX_SHIFT)
-            case _ if kind == SCALE:
-                lower.append(0.0)
-                upper.append(MAX_SCALE)
-            case _ if kind == POSITIVE_SCALE:
-                lower.append(MIN_POSITIVE_SCALE)
-                upper.append(MAX_SCALE)
-            case _ if kind == AMPLITUDE:
-                lower.append(-AMPLITUDE_BOUND_FACTOR * scale if signed_amplitude else 0.0)
-                upper.append(AMPLITUDE_BOUND_FACTOR * scale)
-            case _:
-                lower.append(float(y.min()) - OFFSET_BOUND_FACTOR * scale)
-                upper.append(float(y.max()) + OFFSET_BOUND_FACTOR * scale)
+        if kind not in LINEAR_KINDS:
+            continue
+        if kind == AMPLITUDE:
+            lower.append(-AMPLITUDE_BOUND_FACTOR * scale if signed_amplitude else 0.0)
+            upper.append(AMPLITUDE_BOUND_FACTOR * scale)
+        else:
+            lower.append(float(y.min()) - OFFSET_BOUND_FACTOR * scale)
+            upper.append(float(y.max()) + OFFSET_BOUND_FACTOR * scale)
+    for spec in law.nonlinear_specs(log_x):
+        lower.append(spec.lower)
+        upper.append(spec.upper)
     return Bounds(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float))
 
 
-def _grid_for_kind(kind: str) -> tuple[float, ...]:
-    """Candidate seed values for one nonlinear parameter kind."""
-    if kind == EXPONENT:
-        return EXPONENT_GRID
-    if kind == SIGNED_EXPONENT:
-        return SIGNED_EXPONENT_GRID
-    if kind == SHIFT:
-        return SHIFT_GRID
-    if kind in (SCALE, POSITIVE_SCALE):
-        return SCALE_GRID
-    raise ValueError(f"No nonlinear seed grid for parameter kind {kind!r}")
+def _nonlinear_grid(specs: Sequence[NonlinearSpec]) -> np.ndarray:
+    """Grid of candidate nonlinear vectors, subsampled when the full product is too large.
 
+    The subsample is drawn from a fixed seed, so a fit stays exactly reproducible.
 
-def _nonlinear_grid(law: LawInstance) -> np.ndarray:
-    """Candidate nonlinear vectors, deterministically subsampled when the product is too large."""
-    grids = [_grid_for_kind(kind) for kind in law.nonlinear_kinds]
-    if not grids:  # pragma: no cover - built-in laws all have nonlinear parameters
+    Examples:
+        >>> from .laws import EXPONENT_SPEC, NonlinearSpec
+        >>> _nonlinear_grid([EXPONENT_SPEC, NonlinearSpec(0.0, 1.0, (0.0, 0.5))]).shape
+        (12, 2)
+        >>> _nonlinear_grid([EXPONENT_SPEC] * 4).shape
+        (256, 4)
+    """
+    if not specs:  # pragma: no cover - every law has at least one nonlinear parameter
         return np.zeros((1, 0))
-    total = int(np.prod([len(grid) for grid in grids]))
+    total = int(np.prod([len(spec.grid) for spec in specs]))
     if total <= MAX_GRID_POINTS:
-        return np.asarray(list(itertools.product(*grids)), dtype=float)
+        return np.array(list(itertools.product(*(spec.grid for spec in specs))), dtype=float)
     rng = np.random.default_rng(0)
-    return np.column_stack(
-        [rng.choice(np.asarray(grid), size=MAX_GRID_POINTS, replace=True) for grid in grids]
-    )
+    return np.column_stack([rng.choice(np.asarray(spec.grid), size=MAX_GRID_POINTS) for spec in specs])
 
 
 def _solve_linear(a: np.ndarray, b: np.ndarray, low: np.ndarray, high: np.ndarray):
@@ -181,17 +191,38 @@ def _solve_linear(a: np.ndarray, b: np.ndarray, low: np.ndarray, high: np.ndarra
 class GridSeeder:
     """Reusable variable-projection restarts for a fixed design, weights and bounds.
 
-    For each candidate nonlinear vector, the linear coefficients are solved exactly. The resulting design
-    matrices and pseudo-inverses are reusable across bootstrap draws because predictors and fitting weights do
-    not change.
+    For each candidate nonlinear vector the offset and amplitudes are solved exactly, so each seed is
+    already optimal in every direction except the nonlinear ones. The design matrices and their
+    pseudo-inverses depend only on the nonlinear grid, the predictors and the weights -- none of
+    which change across bootstrap draws -- so they are computed once here and reused thousands of
+    times.
+
+    Examples:
+        >>> from .laws import build_law
+        >>> law = build_law("separable-power", ["model_size__n"], ["dataset_size__d"])
+        >>> grid = np.array([[n, d] for n in (1.0, 10.0, 100.0) for d in (1.0, 10.0, 100.0)])
+        >>> log_x = np.log(grid)
+        >>> y = law.evaluate(np.array([0.5, 1.0, 2.0, 0.2, 0.5]), log_x)
+        >>> bounds = parameter_bounds(law, y, signed_amplitude=False)
+        >>> seeder = GridSeeder(law, log_x, np.ones(len(y)), bounds)
+        >>> cost, seed = seeder.seeds(y)[0]
+        >>> seed[3:].round(2)
+        array([0.2, 0.5])
     """
 
     def __init__(self, law: LawInstance, log_x: np.ndarray, weights: np.ndarray, bounds: Bounds):
-        """Precompute the weighted designs for every nonlinear grid point."""
+        """Precompute the weighted designs for every grid point.
+
+        Args:
+            law: The instantiated law.
+            log_x: Log-normalized predictors, shape ``(n_obs, n_predictors)``.
+            weights: Fitting weights, shape ``(n_obs,)``.
+            bounds: Parameter box constraints.
+        """
         self.law = law
         self.bounds = bounds
         self.sqrt_w = np.sqrt(np.asarray(weights, dtype=float))
-        self.nonlinear = _nonlinear_grid(law)
+        self.nonlinear = _nonlinear_grid(law.nonlinear_specs(log_x))
         self.designs = [self.sqrt_w[:, None] * law.design(nonlinear, log_x) for nonlinear in self.nonlinear]
         self.pseudo_inverses = [np.linalg.pinv(design) for design in self.designs]
         self.low = bounds.lower[: law.n_linear]
@@ -200,7 +231,19 @@ class GridSeeder:
     def seeds(
         self, y: np.ndarray, n_seeds: int = MAX_REFINEMENTS, exact: bool = True
     ) -> list[tuple[float, np.ndarray]]:
-        """Best starting points for these observations, ordered by increasing cost."""
+        """Best starting points for these observations, ordered by increasing cost.
+
+        Args:
+            y: Observed values, shape ``(n_obs,)``.
+            n_seeds: How many seeds to return.
+            exact: Whether to solve the bounded linear problem exactly when the unconstrained
+                solution violates a bound. Exact solves are used for the point estimate; the
+                bootstrap uses the cheaper clipped solution, whose cost is an upper bound on the
+                exact one and therefore still detects a genuinely better basin.
+
+        Returns:
+            Up to ``n_seeds`` ``(cost, params)`` pairs.
+        """
         b = self.sqrt_w * y
         candidates: list[tuple[float, np.ndarray]] = []
         for i, design in enumerate(self.designs):
@@ -220,7 +263,16 @@ class GridSeeder:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class CurveFit:
-    """The outcome of one nonlinear least-squares fit."""
+    """The outcome of one nonlinear least-squares fit.
+
+    Attributes:
+        params: The fitted parameter vector.
+        cost: Half the weighted sum of squared residuals at the optimum.
+        success: Whether the optimizer reported convergence.
+        n_function_evaluations: Total objective evaluations across all polished starts.
+        message: The optimizer's termination message.
+        n_starts: How many starting points were polished.
+    """
 
     params: np.ndarray
     cost: float
@@ -239,7 +291,35 @@ def fit_curve(
     starts: Sequence[np.ndarray] | None = None,
     seeder: GridSeeder | None = None,
 ) -> CurveFit:
-    """Fit a law to run-level observations by weighted nonlinear least squares."""
+    """Fit a law to run-level observations by weighted nonlinear least squares.
+
+    Args:
+        law: The instantiated law.
+        log_x: Log-normalized predictors, shape ``(n_obs, n_predictors)``.
+        y: Observed values, shape ``(n_obs,)``.
+        weights: Fitting weights, shape ``(n_obs,)``.
+        bounds: Parameter box constraints.
+        starts: Explicit starting points. Defaults to the best :class:`GridSeeder` seeds; pass a
+            single previously fitted vector to warm-start a bootstrap refit.
+        seeder: A reusable seeder to draw default starting points from.
+
+    Returns:
+        The best :class:`CurveFit` across all starting points.
+
+    Examples:
+        >>> from .laws import build_law
+        >>> law = build_law("separable-power", ["model_size__n"], ["dataset_size__d"])
+        >>> grid = np.array([[n, d] for n in (1.0, 10.0, 100.0) for d in (1.0, 10.0, 100.0)])
+        >>> log_x = np.log(grid)
+        >>> truth = np.array([0.5, 1.0, 2.0, 0.3, 0.6])
+        >>> y = law.evaluate(truth, log_x)
+        >>> bounds = parameter_bounds(law, y, signed_amplitude=False)
+        >>> fit = fit_curve(law, log_x, y, np.ones(len(y)), bounds)
+        >>> fit.params.round(3)
+        array([0.5, 1. , 2. , 0.3, 0.6])
+        >>> fit.success
+        True
+    """
     sqrt_w = np.sqrt(weights)
     if starts is None:
         seeder = seeder or GridSeeder(law, log_x, weights, bounds)
@@ -261,6 +341,10 @@ def fit_curve(
             jac=jacobian,
             bounds=(bounds.lower, bounds.upper),
             method="trf",
+            # The parameters are already comparably scaled by construction -- predictors are
+            # normalized to a geometric mean of one, amplitudes sit on the target's own scale, and
+            # exponents are order one -- so scipy's Jacobian-based rescaling buys nothing here and
+            # costs roughly three times the runtime of the whole fit.
             x_scale=1.0,
             ftol=CONVERGENCE_TOLERANCE,
             xtol=CONVERGENCE_TOLERANCE,
@@ -281,18 +365,56 @@ def fit_curve(
 
 
 def is_constant(y: np.ndarray) -> bool:
-    """Whether a target carries no variation to explain."""
+    """Whether a target carries no variation to explain.
+
+    A target that never changes -- an AUROC pinned at 1.0, a metric that simply does not scale --
+    has no scaling law to find. Detecting it up front matters for more than tidiness: handing a
+    flat target to a bounded trust-region solver produces thousands of vanishing steps per fit,
+    which is slow enough to look like a hang once multiplied by the bootstrap.
+
+    Args:
+        y: Observed values.
+
+    Returns:
+        Whether the values are constant to within :data:`CONSTANT_TARGET_TOLERANCE`.
+
+    Examples:
+        >>> is_constant(np.array([0.8, 0.8, 0.8]))
+        True
+        >>> is_constant(np.array([0.8, 0.81, 0.8]))
+        False
+    """
     y = np.asarray(y, dtype=float)
     return bool(np.ptp(y) <= CONSTANT_TARGET_TOLERANCE * max(1.0, float(np.abs(y).max())))
 
 
 def constant_fit(law: LawInstance, y: np.ndarray) -> CurveFit:
-    """The exact fit for a target with no variation: offset alone, every other linear term zero."""
+    """The exact fit for a target with no variation: the offset alone, every other term zero.
+
+    The nonlinear parameters multiply a zero amplitude, so their values change nothing. They are set
+    to zero where the law allows it and to the nearest allowed value where it does not -- a break
+    scale cannot be zero -- so that the vector can still be evaluated.
+
+    Args:
+        law: The instantiated law.
+        y: Observed values.
+
+    Returns:
+        The trivial :class:`CurveFit`.
+
+    Examples:
+        >>> from .laws import build_law
+        >>> law = build_law("separable-power", ["model_size__n"], ["dataset_size__d"])
+        >>> constant_fit(law, np.array([0.8, 0.8])).params
+        array([0.8, 0. , 0. , 0. , 0. ])
+        >>> broken = constant_fit(build_law("broken-power", ["model_size__n"], []), np.array([0.8, 0.8]))
+        >>> broken.params.round(3)
+        array([0.8  , 0.   , 0.   , 0.   , 0.1  , 0.046])
+    """
     params = np.zeros(law.n_params, dtype=float)
     params[0] = float(np.mean(y))
-    for i, kind in enumerate(law.param_kinds):
-        if kind == POSITIVE_SCALE:
-            params[i] = 1.0
+    specs = law.nonlinear_specs()
+    params[law.n_linear :] = np.clip(0.0, [spec.lower for spec in specs], [spec.upper for spec in specs])
     return CurveFit(
         params=params,
         cost=0.0,
@@ -304,7 +426,18 @@ def constant_fit(law: LawInstance, y: np.ndarray) -> CurveFit:
 
 
 def leverage(law: LawInstance, params: np.ndarray, log_x: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """Per-observation leverage of the linearized fit at ``params``."""
+    """Per-observation leverage of the linearized fit at ``params``.
+
+    Args:
+        law: The instantiated law.
+        params: The fitted parameter vector.
+        log_x: Log-normalized predictors.
+        weights: Fitting weights.
+
+    Returns:
+        Leverages ``h_r`` in ``[0, 1]``, one per observation. These say how much each observation
+        pulls the curve toward itself, and hence how much fitting shrinks its own residual.
+    """
     a = np.sqrt(weights)[:, None] * law.jacobian(params, log_x)
     hat = a @ np.linalg.pinv(a.T @ a) @ a.T
     return np.clip(np.diag(hat), 0.0, 1.0)
@@ -312,7 +445,18 @@ def leverage(law: LawInstance, params: np.ndarray, log_x: np.ndarray, weights: n
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class VarianceComponents:
-    """The two variance components of the statistical model."""
+    """The two variance components of the statistical model.
+
+    Attributes:
+        eval_var: Pooled within-run evaluation variance.
+        eval_var_independent: The part of ``eval_var`` that averages away across runs.
+        run_var: The run-to-run training variance actually used.
+        run_var_replicate: The replicate-based estimate, or ``None`` if not estimable.
+        run_var_residual: The residual-based estimate, or ``None`` if not estimable.
+        replicate_dof: Degrees of freedom behind the replicate-based estimate.
+        residual_dof: Degrees of freedom behind the residual-based estimate.
+        source: ``"replicates"``, ``"residual"``, or ``"none"``.
+    """
 
     eval_var: float
     eval_var_independent: float
@@ -341,7 +485,41 @@ class VarianceComponents:
 def replicate_run_variance(
     observations: TargetObservations, eval_var_independent: float
 ) -> tuple[float | None, int]:
-    """Estimate run-to-run variance from independently trained models at the same configuration."""
+    """Estimate run-to-run variance from independently trained models at the same configuration.
+
+    Within one configuration, the spread of run means reflects both genuine run-to-run variation and
+    the residual evaluation noise left in each mean. The latter is subtracted off exactly:
+    for a configuration with ``n_c`` runs and per-run mean variances ``v_r``, the expected
+    within-configuration sum of squares is ``(n_c - 1) * run_var + (1 - 1/n_c) * sum_r v_r``.
+
+    Args:
+        observations: Run-level observations for one target.
+        eval_var_independent: The evaluation variance that averages away across runs.
+
+    Returns:
+        The pooled estimate (floored at zero) and its degrees of freedom, or ``(None, 0)`` when no
+        configuration has replicate runs.
+
+    Examples:
+        A configuration with two runs whose means differ by 0.2, and no evaluation noise, implies a
+        run-level variance of ``0.02``:
+
+        >>> from .data import TargetObservations
+        >>> observations = TargetObservations(
+        ...     target="t",
+        ...     run_ids=("r1", "r2"),
+        ...     config_index=np.array([0, 0]),
+        ...     mean=np.array([1.0, 1.2]),
+        ...     n_eval=np.array([5, 5]),
+        ...     within_ss=0.0,
+        ...     within_dof=8,
+        ...     eval_pair_correlation=None,
+        ...     n_shared_pairs=0,
+        ... )
+        >>> estimate, dof = replicate_run_variance(observations, 0.0)
+        >>> round(estimate, 6), dof
+        (0.02, 1)
+    """
     per_run_var = eval_var_independent / np.maximum(observations.n_eval, 1)
     total_ss, correction, dof = 0.0, 0.0, 0
     for config in np.unique(observations.config_index):
@@ -361,7 +539,22 @@ def replicate_run_variance(
 def residual_run_variance(
     residuals: np.ndarray, leverages: np.ndarray, per_run_var: np.ndarray, n_params: int
 ) -> tuple[float | None, int]:
-    """Estimate run-to-run variance from residuals of the fitted curve."""
+    """Estimate run-to-run variance from the residuals of the fitted curve.
+
+    This is the fallback used when no configuration has replicate runs. It cannot separate genuine
+    run-to-run variation from misspecification of the scaling law, so it is biased *upward* whenever
+    the law does not fit -- which is the conservative direction, and is reported as such.
+
+    Args:
+        residuals: Run-level residuals ``ybar_r - f(x_r)``.
+        leverages: Per-observation leverages from :func:`leverage`.
+        per_run_var: Evaluation-noise variance of each run mean.
+        n_params: Number of fitted parameters.
+
+    Returns:
+        The estimate (floored at zero) and its residual degrees of freedom, or ``(None, 0)`` when
+        there are no residual degrees of freedom left.
+    """
     dof = residuals.size - n_params
     if dof <= 0:
         return None, 0
@@ -370,7 +563,26 @@ def residual_run_variance(
 
 
 def compute_weights(run_var: float, per_run_var: np.ndarray) -> np.ndarray:
-    """Fitting weights, normalized to mean one and range-limited."""
+    """Fitting weights, normalized to mean one and range-limited.
+
+    Each run mean has variance ``run_var + eval_var_independent / n_r``, so its weight is the
+    reciprocal. The ratio between the largest and smallest weight is capped at
+    :data:`MAX_WEIGHT_RATIO` so that a run with an unusually large number of evaluation rows cannot
+    dominate the fit when the run-level variance happens to estimate to zero.
+
+    Args:
+        run_var: Estimated run-to-run variance.
+        per_run_var: Evaluation-noise variance of each run mean.
+
+    Returns:
+        Weights of shape ``per_run_var.shape``, averaging to one.
+
+    Examples:
+        >>> compute_weights(0.0, np.array([0.0, 0.0]))
+        array([1., 1.])
+        >>> compute_weights(1.0, np.array([0.0, 1.0])).round(4)
+        array([1.3333, 0.6667])
+    """
     total = run_var + per_run_var
     if not np.any(total > 0):
         return np.ones_like(per_run_var, dtype=float)

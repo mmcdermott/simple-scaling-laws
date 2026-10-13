@@ -49,7 +49,7 @@ jobs:
       # Add CODECOV_TOKEN in the repository settings to turn these back on.
       - name: Upload coverage to Codecov
         if: github.actor != 'dependabot[bot]' && env.CODECOV_TOKEN != ''
-        uses: codecov/codecov-action@v7.0.0
+        uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
