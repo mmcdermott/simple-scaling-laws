@@ -1,9 +1,15 @@
 """Focused tests for the separable interaction power law."""
 
+import warnings
+
 import numpy as np
 
+from simple_scaling_laws import fit
 from simple_scaling_laws.laws import build_law
 from simple_scaling_laws.model import raw_scale_params
+from simple_scaling_laws.simulate import simulate_runs
+
+LAW = "separable-interaction-power"
 
 
 def test_interaction_law_can_reverse_model_size_effect_by_dataset_size():
@@ -96,3 +102,51 @@ def test_interaction_supports_multiple_scale_predictors():
     params = np.array([1.0, 2.0, 3.0, 4.0, 0.5, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
     values = law.evaluate(params, log_x)
     assert np.allclose(values, 1.0 + 2.0 + 3.0 + 4.0 - 0.5)
+
+
+# --- End to end. Recovery, calibration and identifiability are checked for every law family together
+# in ``test_law_families.py``; what is specific to this law is the behavior it was added for.
+
+INTERACTION_TRUTH = {
+    "E": 1.0,
+    "A": 2.0,
+    "B": 3.0,
+    "C": 1.5,
+    "alpha": 0.3,
+    "beta": 0.3,
+    "gamma": 0.15,
+    "delta": 0.3,
+}
+MODEL_SIZES = (1e6, 1e7, 1e8, 1e9)
+DATASET_SIZES = (1e3, 1e4, 1e5, 1e6)
+
+
+def _simulate(truth, law, seed, runs_per_config=2, run_sd=0.02, eval_sd=0.03, evaluations_per_run=4):
+    return simulate_runs(
+        {"test_loss__ce": truth},
+        model_sizes=MODEL_SIZES,
+        dataset_sizes=DATASET_SIZES,
+        law=law,
+        runs_per_config=runs_per_config,
+        evaluations_per_run=evaluations_per_run,
+        run_sd=run_sd,
+        eval_sd=eval_sd,
+        seed=seed,
+    )
+
+
+def test_fit_recovers_the_reversal_from_noisy_runs():
+    """The reason the law exists: larger models hurt when data are scarce, and help when they are not."""
+    model = fit(_simulate(INTERACTION_TRUTH, LAW, seed=0), law=LAW, n_draws=100, seed=0)
+    assert not [note for note in model.warnings if note.severity == "error"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        predictions = model.predict(
+            {
+                "model_size__n_params": [1e7, 1e9, 1e7, 1e9],
+                "dataset_size__n_subjects": [1e3, 1e3, 1e6, 1e6],
+            }
+        )
+    scarce_small, scarce_large, ample_small, ample_large = predictions["test_loss__ce__median"]
+    assert scarce_large > scarce_small
+    assert ample_large < ample_small

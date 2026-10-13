@@ -31,7 +31,7 @@ from .fitting import (
     replicate_run_variance,
     residual_run_variance,
 )
-from .laws import DEFAULT_LAW, LawInstance, build_law
+from .laws import DEFAULT_LAW, LawError, LawInstance, build_law
 from .model import ScalingLawModel, TargetFit
 from .notes import Note
 from .uncertainty import DEFAULT_DRAWS, Uncertainty, bootstrap
@@ -154,7 +154,7 @@ def _fit_target(
     signed = dataset.schema.target(target).signed_amplitude
     log_x = dataset.log_x[:, dataset.column_indices(law.predictors)][observations.config_index]
     y = observations.mean
-    bounds = parameter_bounds(law, y, signed_amplitude=signed)
+    bounds = parameter_bounds(law, y, signed_amplitude=signed, log_x=log_x)
     per_run_var = observations.eval_var_independent / np.maximum(observations.n_eval, 1)
 
     if is_constant(y) or dataset.n_configurations < 2:
@@ -218,7 +218,11 @@ def _fit_target(
         },
     )
     notes = list(uncertainty.notes)
-    notes.extend(diagnostics_mod.fit_notes(target, law, fit, bounds, uncertainty, components))
+    notes.extend(
+        diagnostics_mod.fit_notes(
+            target, law, fit, bounds, uncertainty, components, log_x=log_x, weights=weights
+        )
+    )
     return target_fit, uncertainty, notes
 
 
@@ -412,6 +416,10 @@ def fit(
     Returns:
         The fitted :class:`~simple_scaling_laws.model.ScalingLawModel`.
 
+    Raises:
+        LawError: If the law is unknown, or cannot be built over the predictors that vary in this
+            experiment.
+
     Examples:
         >>> from simple_scaling_laws.simulate import simulate_runs
         >>> frame = simulate_runs(
@@ -458,14 +466,23 @@ def fit(
 
     varying = dataset.varying_predictors()
     dropped = [name for name in dataset.schema.predictors if name not in varying]
-    if varying:
+    kept = varying or dataset.schema.predictors
+    try:
         instance = build_law(
             law,
-            [n for n in dataset.schema.model_size if n in varying],
-            [n for n in dataset.schema.dataset_size if n in varying],
+            [n for n in dataset.schema.model_size if n in kept],
+            [n for n in dataset.schema.dataset_size if n in kept],
         )
-    else:
-        instance = build_law(law, dataset.schema.model_size, dataset.schema.dataset_size)
+    except LawError as error:
+        # A law with a fixed arity can be ruled out by the data rather than by the request: a
+        # predictor held at one value is dropped before the law is built. Say which, so the message
+        # points at the experiment instead of at a law the caller chose correctly.
+        if not dropped:
+            raise
+        raise LawError(
+            f"{error}. Predictor(s) {dropped} take a single value across the whole experiment and "
+            "cannot be fit, which leaves this law without the predictors it needs."
+        ) from error
     if dropped:
         notes.append(
             Note(

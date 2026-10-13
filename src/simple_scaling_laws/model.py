@@ -153,8 +153,13 @@ class TargetFit:
 def raw_scale_params(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
     """Parameters restated in raw predictor units.
 
-    Fitting happens on normalized predictors ``x / reference``. Each law family owns the algebra
-    needed to restate its amplitudes or other scale-sensitive parameters in raw predictor units.
+    Fitting happens on normalized predictors ``x / reference``, which keeps amplitudes on the
+    target's own scale and the optimization well conditioned. Exponents are unaffected by that
+    choice, but amplitudes are: an amplitude ``A`` on normalized predictors corresponds to
+    ``A * reference ** alpha`` on raw ones. Both are reported so neither reading is ambiguous.
+
+    The algebra differs by law family, so the conversion itself lives with the law; see
+    :meth:`simple_scaling_laws.laws.LawInstance.raw_scale_params`.
 
     Args:
         law: The instantiated law.
@@ -206,6 +211,9 @@ class ScalingLawModel:
         self._fits = fits
         self._draws = draws
         self._diagnostics = diagnostics
+        # The law is fit only over predictors that actually varied; every predictor the input
+        # declared is still tracked, so a prediction at a different value of a held-fixed predictor
+        # is correctly reported as extrapolation rather than silently ignored.
         self._domain_predictors = tuple(manifest["predictors"])
         self._reference = np.array(
             [manifest["predictors"][name]["reference"] for name in law.predictors], dtype=float
@@ -248,7 +256,12 @@ class ScalingLawModel:
 
     @property
     def predictors(self) -> tuple[str, ...]:
-        """Every predictor column the input declared, model-size first."""
+        """Every predictor column the input declared, model-size first.
+
+        Predictions must supply all of them. A predictor that took a single value across the whole experiment
+        is not part of the fitted law -- there was nothing to estimate -- but it is still tracked here so that
+        predicting at a different value is flagged as extrapolation.
+        """
         return self._domain_predictors
 
     @property
@@ -282,13 +295,41 @@ class ScalingLawModel:
         return {name: dict(values) for name, values in self._manifest["predictors"].items()}
 
     def params(self, target: str) -> dict[str, float]:
-        """Point-estimate parameters for one target, in human reading order."""
+        """Point-estimate parameters for one target, in human reading order.
+
+        These are in the *normalized* parameterization the fit uses, where each predictor is divided
+        by the reference scale in :attr:`observed_domain`. Exponents are unaffected by that choice
+        and can be read directly; amplitudes are on the normalized scale, and the artifact's
+        ``fits.json`` additionally records ``params_raw_scale`` for the raw-unit reading.
+
+        For a target confined to ``[0, 1]`` the parameters are also on the **logit** scale it was fit
+        on, so its offset is an asymptote in logit units -- pass it through
+        :func:`simple_scaling_laws.metrics.from_fitting_scale`, or read the asymptote off
+        :meth:`predict` at a large scale, to get it back in the metric's own units.
+
+        Args:
+            target: The target column name.
+
+        Returns:
+            A mapping from parameter name to value.
+        """
         fit = self._fit(target)
         values = dict(zip(self._law.param_names, (float(v) for v in fit.params), strict=True))
         return {name: values[name] for name in self._law.display_names}
 
     def conf_int(self, target: str, level: float = 0.95) -> dict[str, tuple[float, float]]:
-        """Bootstrap confidence intervals for one target's parameters."""
+        """Bootstrap confidence intervals for one target's parameters.
+
+        Args:
+            target: The target column name.
+            level: Central interval mass, e.g. ``0.95``.
+
+        Returns:
+            A mapping from parameter name to a ``(lower, upper)`` tuple.
+
+        Raises:
+            ValueError: If ``level`` is not in ``(0, 1)``.
+        """
         if not 0 < level < 1:
             raise ValueError(f"level must be in (0, 1), got {level}")
         tail = (1.0 - level) / 2.0
@@ -307,7 +348,13 @@ class ScalingLawModel:
         }
 
     def metric_correlations(self) -> pl.DataFrame:
-        """Run-level associations between the primary target and every other target."""
+        """Run-level associations between the primary target and every other target.
+
+        Returns:
+            One row per non-primary target, with run-level Pearson and Spearman correlations, a
+            bootstrap interval, and -- for comparison only -- the inflated correlation obtained by
+            treating every evaluation row as an independent observation.
+        """
         rows = []
         for target, values in self._diagnostics.get("metric_correlations", {}).items():
             interval = values.get("pearson_ci") or [None, None]
@@ -362,7 +409,17 @@ class ScalingLawModel:
         return "\n".join(lines)
 
     def domain_position(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Where requested points sit relative to the observed predictor domain."""
+        """Where requested points sit relative to the observed predictor domain.
+
+        Args:
+            points: Raw predictor values, shape ``(n_points, n_predictors)``.
+
+        Returns:
+            A ``(is_extrapolation, distance)`` pair. ``distance`` is the largest excursion beyond
+            the observed range of any predictor, measured in units of that predictor's observed log
+            range, and is zero for interior points. A distance of ``1.0`` means the point sits one
+            full observed range beyond the edge.
+        """
         domain = self.observed_domain
         distances = np.zeros(points.shape[0], dtype=float)
         for j, name in enumerate(self._domain_predictors):
@@ -384,7 +441,60 @@ class ScalingLawModel:
         quantiles: Sequence[float] = DEFAULT_QUANTILES,
         seed: int | None = None,
     ) -> pl.DataFrame:
-        """Predict target values at new scales, with uncertainty."""
+        """Predict target values at new scales, with uncertainty.
+
+        Args:
+            points: A dataframe, parquet/CSV path, or mapping of predictor column to values. An
+                optional ``point_id`` column is carried through; otherwise identifiers are the row
+                positions.
+            kind: ``"mean"`` for the distribution of the expected scaling curve ``f(N, D)`` -- what
+                this training procedure achieves on average at that scale -- or ``"new-run"`` to add
+                training-run stochasticity, i.e. what a single newly trained model might achieve.
+            targets: Which targets to predict. Defaults to all of them.
+            quantiles: Quantiles to report.
+            seed: Seed for the ``new-run`` noise draws. Defaults to the seed recorded at fit time,
+                so repeated calls agree.
+
+        Returns:
+            One row per requested point: ``point_id``, the predictor values, a ``domain`` label,
+            an ``extrapolation_distance``, and one column per target and quantile.
+
+        Raises:
+            PredictionError: If ``kind`` is unknown, a requested target was not fit, or the points
+                are missing a predictor column.
+
+        Examples:
+            >>> from simple_scaling_laws import fit
+            >>> from simple_scaling_laws.simulate import simulate_runs
+            >>> frame = simulate_runs(
+            ...     {"test_loss__ce": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}},
+            ...     run_sd=0.01,
+            ...     eval_sd=0.02,
+            ...     seed=0,
+            ... )
+            >>> model = fit(frame, n_draws=200, seed=0)
+            >>> points = pl.DataFrame(
+            ...     {
+            ...         "point_id": ["interior", "bigger"],
+            ...         "model_size__n_params": [1e7, 1e10],
+            ...         "dataset_size__n_subjects": [1e4, 1e5],
+            ...     }
+            ... )
+            >>> predictions = model.predict(points)
+            >>> predictions["domain"].to_list()
+            ['interpolation', 'extrapolation']
+            >>> sorted(c for c in predictions.columns if c.startswith("test_loss"))
+            ['test_loss__ce__median', 'test_loss__ce__q025', 'test_loss__ce__q975']
+
+            A ``new-run`` prediction is wider than a ``mean`` prediction, because it also carries
+            the training stochasticity of a single new model:
+
+            >>> new_run = model.predict(points, kind="new-run")
+            >>> def width(frame):
+            ...     return frame["test_loss__ce__q975"] - frame["test_loss__ce__q025"]
+            >>> bool((width(new_run) > width(predictions)).all())
+            True
+        """
         if kind not in PREDICTION_KINDS:
             raise PredictionError(f"kind must be one of {list(PREDICTION_KINDS)}, got {kind!r}")
         requested = list(targets) if targets is not None else list(self.targets)
@@ -423,7 +533,17 @@ class ScalingLawModel:
         return pl.DataFrame(columns)
 
     def prepare_points(self, points: Any) -> pl.DataFrame:
-        """Validate a prediction request into a frame with a ``point_id`` and every predictor."""
+        """Validate a prediction request into a frame with a ``point_id`` and every predictor.
+
+        Args:
+            points: A dataframe, parquet/CSV path, or mapping of predictor column to values.
+
+        Returns:
+            The validated frame.
+
+        Raises:
+            PredictionError: If a predictor column is missing or a value is not positive and finite.
+        """
         frame = _points_frame(points, self._domain_predictors)
         raw = frame.select(self._domain_predictors).to_numpy().astype(float)
         if not np.all(np.isfinite(raw)) or np.any(raw <= 0):
@@ -431,7 +551,14 @@ class ScalingLawModel:
         return frame
 
     def fitting_predictors(self, frame: pl.DataFrame) -> np.ndarray:
-        """Log-normalized values of this model's fitted predictors, ready for the law."""
+        """Log-normalized values of this model's *fitted* predictors, ready for the law.
+
+        Args:
+            frame: A frame from :meth:`prepare_points`.
+
+        Returns:
+            Array of shape ``(n_points, n_fitted_predictors)``.
+        """
         fitted = frame.select(self._law.predictors).to_numpy().astype(float)
         return np.log(fitted) - np.log(self._reference)
 
@@ -442,11 +569,26 @@ class ScalingLawModel:
         kind: str = "mean",
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
-        """Predicted values for one target, one row per bootstrap draw, on the target's own scale."""
+        """Predicted values for one target, one row per bootstrap draw, on the target's own scale.
+
+        This is the primitive behind :meth:`predict`, exposed because comparing systems needs the
+        draws themselves rather than their quantiles.
+
+        Args:
+            target: The target column name.
+            log_x: Log-normalized predictors for the fitted law, shape ``(n_points, n_fitted)``.
+            kind: ``"mean"`` or ``"new-run"``.
+            rng: Random source for the ``new-run`` noise.
+
+        Returns:
+            Array of shape ``(n_draws, n_points)``.
+        """
         draws = self._draws[target]
         values = self._law.evaluate_many(draws.params, log_x)
         if kind == "new-run":
             values = values + _run_noise(rng or np.random.default_rng(0), draws, values.shape)
+        # Training-run noise is added on the fitting scale, where the model is additive, and only
+        # then mapped back -- so a bounded metric's interval cannot leave its bounds.
         return from_fitting_scale(values, self.target_kind(target))
 
     def target_kind(self, target: str) -> MetricKind:
@@ -454,7 +596,14 @@ class ScalingLawModel:
         return self._schema.target(target).kind
 
     def save(self, path: str | Path) -> Path:
-        """Write this model to a ``.slaw`` artifact directory."""
+        """Write this model to a ``.slaw`` artifact directory.
+
+        Args:
+            path: Destination directory.
+
+        Returns:
+            The resolved artifact path.
+        """
         fits = {target: fit.to_dict(self._law, self._reference) for target, fit in self._fits.items()}
         draws: dict[str, np.ndarray] = {}
         for target, uncertainty in self._draws.items():
@@ -464,7 +613,14 @@ class ScalingLawModel:
 
     @classmethod
     def load(cls, path: str | Path) -> ScalingLawModel:
-        """Read a model back from a ``.slaw`` artifact directory."""
+        """Read a model back from a ``.slaw`` artifact directory.
+
+        Args:
+            path: The artifact directory.
+
+        Returns:
+            The reconstructed model, which predicts identically to the one that was saved.
+        """
         manifest, fits_data, draws_data, diagnostics = artifact_io.read_artifact(path)
         law = LawInstance.from_dict(manifest["law"])
         schema = Schema.from_dict(manifest["schema"])
@@ -490,7 +646,14 @@ def _format(value: float | None) -> str:
 
 
 def _run_noise(rng: np.random.Generator, draws: Uncertainty, shape: tuple[int, int]) -> np.ndarray:
-    """Training-run noise for a ``new-run`` prediction."""
+    """Training-run noise for a ``new-run`` prediction.
+
+    The *shape* of the distribution comes from the data whenever enough run-level deviations were actually
+    observed -- they are standardized and resampled, so no normality is assumed -- while the *scale* always
+    comes from the bootstrap draws, so uncertainty about how variable training runs are is carried rather than
+    fixed at its point estimate. With too few observed deviations to resample there is no empirical shape to
+    borrow, and the noise falls back to a normal draw at the same bootstrapped scale.
+    """
     deviations = draws.run_deviations
     if deviations.size >= MIN_DEVIATIONS_FOR_RESAMPLING:
         spread = float(np.std(deviations, ddof=1))
