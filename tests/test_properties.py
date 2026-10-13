@@ -295,7 +295,8 @@ def test_law_structure_is_self_consistent_and_round_trips(name, n_model, n_datas
     assert len(law.param_names) == len(law.param_kinds) == law.n_params
     assert len(set(law.param_names)) == law.n_params
     assert law.n_linear + law.n_exponents == law.n_params
-    assert law.n_exponents == n_model + n_dataset
+    assert len(law.exponent_predictor) == law.n_exponents
+    assert set(law.exponent_predictor).issubset(range(n_model + n_dataset))
     assert sorted(law.display_names) == sorted(law.param_names)
     assert LawInstance.from_dict(law.to_dict()) == law
 
