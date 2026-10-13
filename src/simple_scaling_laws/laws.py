@@ -20,12 +20,9 @@ import numpy as np
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
-#: Upper bound on any fitted exponent. Empirical ML scaling exponents are well under 1; the bound
-#: exists to keep the optimizer inside a numerically sane region, not to express a belief.
 MAX_EXPONENT: float = 3.0
 
-#: Parameter kinds, in the order they appear in a parameter vector.
-OFFSET, AMPLITUDE, EXPONENT = "offset", "amplitude", "exponent"
+OFFSET, AMPLITUDE, SIGNED_AMPLITUDE, EXPONENT = "offset", "amplitude", "signed_amplitude", "exponent"
 
 
 class LawError(ValueError):
@@ -34,19 +31,7 @@ class LawError(ValueError):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class LawInstance:
-    """A scaling law bound to a concrete set of predictor columns.
-
-    A parameter vector is ordered ``[offset, *amplitudes, *exponents]``: the linear block first,
-    then the nonlinear block. :attr:`n_linear` splits the two.
-
-    Attributes:
-        law: Name of the law family.
-        model_size: Model-size predictor columns, in order.
-        dataset_size: Dataset-size predictor columns, in order.
-        param_names: Parameter names, in parameter-vector order.
-        param_kinds: Parameter kinds, in parameter-vector order.
-        exponent_predictor: For each exponent, the index of the predictor it applies to.
-    """
+    """A scaling law bound to a concrete set of predictor columns."""
 
     law: str
     model_size: tuple[str, ...]
@@ -57,39 +42,26 @@ class LawInstance:
 
     @property
     def predictors(self) -> tuple[str, ...]:
-        """All predictor columns, model-size first."""
         return self.model_size + self.dataset_size
 
     @property
     def n_params(self) -> int:
-        """Total number of free parameters."""
         return len(self.param_names)
 
     @property
     def n_linear(self) -> int:
-        """Number of parameters that enter the law linearly (the offset plus the amplitudes)."""
         return sum(k != EXPONENT for k in self.param_kinds)
 
     @property
     def n_exponents(self) -> int:
-        """Number of exponents."""
         return len(self.exponent_predictor)
 
     @property
     def display_names(self) -> tuple[str, ...]:
-        """Parameter names in human reading order: offset, then (amplitude, exponent) pairs.
-
-        Examples:
-            >>> law = build_law("separable-power", ("model_size__n",), ("dataset_size__d",))
-            >>> law.param_names
-            ('E', 'A', 'B', 'alpha', 'beta')
-            >>> law.display_names
-            ('E', 'A', 'alpha', 'B', 'beta')
-        """
         names = list(self.param_names)
         linear = names[: self.n_linear]
         exponents = names[self.n_linear :]
-        if len(linear) - 1 == len(exponents):  # one amplitude per exponent
+        if len(linear) - 1 == len(exponents):
             ordered = [linear[0]]
             for amp, exp in zip(linear[1:], exponents, strict=True):
                 ordered.extend([amp, exp])
@@ -97,60 +69,15 @@ class LawInstance:
         return tuple(linear + exponents)
 
     def design(self, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Design matrix of the linear block, given the exponents.
-
-        Args:
-            exponents: Shape ``(n_exponents,)``.
-            log_x: Natural log of the normalized predictors, shape ``(n_obs, n_predictors)``.
-
-        Returns:
-            Array of shape ``(n_obs, n_linear)`` whose product with the linear parameters is the
-            law's value.
-        """
         return _DESIGNS[self.law](self, np.asarray(exponents, dtype=float), log_x)
 
     def evaluate(self, params: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Evaluate the law.
-
-        Args:
-            params: Parameter vector of length :attr:`n_params`.
-            log_x: Natural log of the normalized predictors, shape ``(n_obs, n_predictors)``.
-
-        Returns:
-            Predicted values, shape ``(n_obs,)``.
-
-        Examples:
-            >>> law = build_law("separable-power", ("model_size__n",), ("dataset_size__d",))
-            >>> log_x = np.log(np.array([[1.0, 1.0], [4.0, 1.0]]))
-            >>> law.evaluate(np.array([1.0, 2.0, 3.0, 0.5, 0.25]), log_x).round(4)
-            array([6., 5.])
-        """
         params = np.asarray(params, dtype=float)
         linear = params[: self.n_linear]
         exponents = params[self.n_linear :]
         return self.design(exponents, log_x) @ linear
 
     def evaluate_many(self, params: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Evaluate the law for many parameter vectors at once.
-
-        This is how prediction propagates uncertainty: every bootstrap draw is evaluated at every
-        requested point in one vectorized pass.
-
-        Args:
-            params: Parameter vectors, shape ``(n_draws, n_params)``.
-            log_x: Natural log of the normalized predictors, shape ``(n_points, n_predictors)``.
-
-        Returns:
-            Predicted values, shape ``(n_draws, n_points)``.
-
-        Examples:
-            >>> law = build_law("separable-power", ("model_size__n",), ("dataset_size__d",))
-            >>> log_x = np.log(np.array([[1.0, 1.0], [4.0, 1.0]]))
-            >>> draws = np.array([[1.0, 2.0, 3.0, 0.5, 0.25], [1.0, 2.0, 3.0, 1.0, 0.25]])
-            >>> law.evaluate_many(draws, log_x)
-            array([[6. , 5. ],
-                   [6. , 4.5]])
-        """
         params = np.atleast_2d(np.asarray(params, dtype=float))
         linear = params[:, : self.n_linear]
         exponents = params[:, self.n_linear :]
@@ -158,15 +85,6 @@ class LawInstance:
         return np.einsum("bl,bnl->bn", linear, designs)
 
     def jacobian(self, params: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Analytic Jacobian of :meth:`evaluate` with respect to ``params``.
-
-        Args:
-            params: Parameter vector of length :attr:`n_params`.
-            log_x: Natural log of the normalized predictors, shape ``(n_obs, n_predictors)``.
-
-        Returns:
-            Array of shape ``(n_obs, n_params)``.
-        """
         params = np.asarray(params, dtype=float)
         linear = params[: self.n_linear]
         exponents = params[self.n_linear :]
@@ -176,8 +94,11 @@ class LawInstance:
         jac[:, self.n_linear :] = _EXPONENT_GRADS[self.law](self, linear, design, log_x)
         return jac
 
+    def raw_scale_params(self, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        """Restate parameters in raw predictor units."""
+        return _RAW_SCALE[self.law](self, np.asarray(params, dtype=float), np.asarray(reference, dtype=float))
+
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-compatible dictionary."""
         return {
             "law": self.law,
             "model_size": list(self.model_size),
@@ -189,13 +110,6 @@ class LawInstance:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LawInstance:
-        """Rebuild from :meth:`to_dict` output.
-
-        Examples:
-            >>> law = build_law("multiplicative-power", ("model_size__n",), ("dataset_size__d",))
-            >>> LawInstance.from_dict(law.to_dict()) == law
-            True
-        """
         return cls(
             law=data["law"],
             model_size=tuple(data["model_size"]),
@@ -207,31 +121,26 @@ class LawInstance:
 
 
 def _short(name: str) -> str:
-    """Strip a ``role__`` prefix from a predictor column name."""
     _, sep, rest = name.partition("__")
     return rest if sep else name
 
 
 def _names(base: str, columns: Sequence[str]) -> list[str]:
-    """Name one parameter per column: the bare base name if unique, else base plus column suffix."""
     if len(columns) == 1:
         return [base]
     return [f"{base}_{_short(c)}" for c in columns]
 
 
+def _raw_values(law: LawInstance, params: np.ndarray) -> dict[str, float]:
+    return dict(zip(law.param_names, (float(v) for v in params), strict=True))
+
+
 class _SeparablePower:
-    """``f(x) = E + sum_i A_i * x_i ** -alpha_i``.
-
-    With one model-size and one dataset-size predictor this is the conventional
-    ``E + A N**-alpha + B D**-beta`` form.
-    """
-
     name: ClassVar[str] = "separable-power"
     description: ClassVar[str] = "E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)"
 
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
-        """Construct the :class:`LawInstance` for these predictors."""
         amps = _names("A", model_size) + _names("B", dataset_size)
         exps = _names("alpha", model_size) + _names("beta", dataset_size)
         return LawInstance(
@@ -245,7 +154,6 @@ class _SeparablePower:
 
     @staticmethod
     def design(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Columns ``[1, x_1**-alpha_1, ..., x_k**-alpha_k]``."""
         out = np.empty((log_x.shape[0], law.n_linear), dtype=float)
         out[:, 0] = 1.0
         out[:, 1:] = np.exp(-log_x * exponents[None, :])
@@ -253,33 +161,30 @@ class _SeparablePower:
 
     @staticmethod
     def many_designs(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Design matrices for many exponent vectors at once, shape ``(n_draws, n_points, n_linear)``."""
         out = np.empty((exponents.shape[0], log_x.shape[0], law.n_linear), dtype=float)
         out[:, :, 0] = 1.0
         out[:, :, 1:] = np.exp(-exponents[:, None, :] * log_x[None, :, :])
         return out
 
     @staticmethod
-    def exponent_grad(
-        law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray
-    ) -> np.ndarray:
-        """``d f / d alpha_j = -A_j * log(x_j) * x_j**-alpha_j``."""
+    def exponent_grad(law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray) -> np.ndarray:
         return -linear[None, 1:] * log_x * design[:, 1:]
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        values = _raw_values(law, params)
+        exponents = params[law.n_linear :]
+        for i, name in enumerate(law.param_names[1 : law.n_linear]):
+            values[name] *= float(reference[i] ** exponents[i])
+        return values
 
 
 class _MultiplicativePower:
-    """``f(x) = E + A * prod_i x_i ** -alpha_i``.
-
-    The joint-power alternative to :class:`_SeparablePower`: a single amplitude, one exponent per
-    predictor, and no separate per-predictor asymptote.
-    """
-
     name: ClassVar[str] = "multiplicative-power"
     description: ClassVar[str] = "E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)"
 
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
-        """Construct the :class:`LawInstance` for these predictors."""
         exps = _names("alpha", model_size) + _names("beta", dataset_size)
         return LawInstance(
             law=_MultiplicativePower.name,
@@ -292,7 +197,6 @@ class _MultiplicativePower:
 
     @staticmethod
     def design(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Columns ``[1, prod_i x_i**-alpha_i]``."""
         out = np.empty((log_x.shape[0], 2), dtype=float)
         out[:, 0] = 1.0
         out[:, 1] = np.exp(-(log_x * exponents[None, :]).sum(axis=1))
@@ -300,69 +204,111 @@ class _MultiplicativePower:
 
     @staticmethod
     def many_designs(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Design matrices for many exponent vectors at once, shape ``(n_draws, n_points, 2)``."""
         out = np.empty((exponents.shape[0], log_x.shape[0], 2), dtype=float)
         out[:, :, 0] = 1.0
         out[:, :, 1] = np.exp(-(exponents[:, None, :] * log_x[None, :, :]).sum(axis=2))
         return out
 
     @staticmethod
-    def exponent_grad(
-        law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray
-    ) -> np.ndarray:
-        """``d f / d alpha_j = -A * log(x_j) * prod_i x_i**-alpha_i``."""
+    def exponent_grad(law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray) -> np.ndarray:
         return -linear[1] * log_x * design[:, 1:2]
 
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        values = _raw_values(law, params)
+        scale = float(np.prod(reference ** params[law.n_linear :]))
+        values["A"] *= scale
+        return values
 
-_LAWS: dict[str, Any] = {law.name: law for law in (_SeparablePower, _MultiplicativePower)}
+
+class _SeparableInteractionPower:
+    """Separable model/data powers plus a signed joint interaction power.
+
+    For one model-size predictor ``N`` and one dataset-size predictor ``D`` this is
+    ``E + A*N**-alpha + B*D**-beta + C*N**-gamma*D**-delta``.  The interaction is a generic
+    power-law extension motivated by the joint model/data dependence observed by Kaplan et al.
+    (2020); it is not a named law from that paper.
+    """
+
+    name: ClassVar[str] = "separable-interaction-power"
+    description: ClassVar[str] = (
+        "E + A*N**-alpha + B*D**-beta + C*N**-gamma*D**-delta "
+        "(signed model/data interaction; exactly one model and one dataset predictor)"
+    )
+
+    @staticmethod
+    def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
+        if len(model_size) != 1 or len(dataset_size) != 1:
+            raise LawError("'separable-interaction-power' requires exactly one model-size and one dataset-size predictor")
+        return LawInstance(
+            law=_SeparableInteractionPower.name,
+            model_size=model_size,
+            dataset_size=dataset_size,
+            param_names=("E", "A", "B", "C", "alpha", "beta", "gamma", "delta"),
+            param_kinds=(OFFSET, AMPLITUDE, AMPLITUDE, SIGNED_AMPLITUDE, EXPONENT, EXPONENT, EXPONENT, EXPONENT),
+            exponent_predictor=(0, 1, 0, 1),
+        )
+
+    @staticmethod
+    def design(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        alpha, beta, gamma, delta = exponents
+        log_n, log_d = log_x[:, 0], log_x[:, 1]
+        out = np.empty((log_x.shape[0], 4), dtype=float)
+        out[:, 0] = 1.0
+        out[:, 1] = np.exp(-alpha * log_n)
+        out[:, 2] = np.exp(-beta * log_d)
+        out[:, 3] = np.exp(-gamma * log_n - delta * log_d)
+        return out
+
+    @staticmethod
+    def many_designs(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        log_n, log_d = log_x[:, 0], log_x[:, 1]
+        out = np.empty((exponents.shape[0], log_x.shape[0], 4), dtype=float)
+        out[:, :, 0] = 1.0
+        out[:, :, 1] = np.exp(-exponents[:, 0, None] * log_n[None, :])
+        out[:, :, 2] = np.exp(-exponents[:, 1, None] * log_d[None, :])
+        out[:, :, 3] = np.exp(
+            -exponents[:, 2, None] * log_n[None, :] - exponents[:, 3, None] * log_d[None, :]
+        )
+        return out
+
+    @staticmethod
+    def exponent_grad(law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        grad = np.empty((log_x.shape[0], 4), dtype=float)
+        grad[:, 0] = -linear[1] * log_x[:, 0] * design[:, 1]
+        grad[:, 1] = -linear[2] * log_x[:, 1] * design[:, 2]
+        grad[:, 2] = -linear[3] * log_x[:, 0] * design[:, 3]
+        grad[:, 3] = -linear[3] * log_x[:, 1] * design[:, 3]
+        return grad
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        values = _raw_values(law, params)
+        _, a, b, c, alpha, beta, gamma, delta = params
+        values["A"] = float(a * reference[0] ** alpha)
+        values["B"] = float(b * reference[1] ** beta)
+        values["C"] = float(c * reference[0] ** gamma * reference[1] ** delta)
+        return values
+
+
+_LAWS: dict[str, Any] = {
+    law.name: law for law in (_SeparablePower, _MultiplicativePower, _SeparableInteractionPower)
+}
 _DESIGNS = {name: law.design for name, law in _LAWS.items()}
 _EXPONENT_GRADS = {name: law.exponent_grad for name, law in _LAWS.items()}
 _MANY_DESIGNS = {name: law.many_designs for name, law in _LAWS.items()}
+_RAW_SCALE = {name: law.raw_scale for name, law in _LAWS.items()}
 
-#: Name of the law used when the user does not choose one.
 DEFAULT_LAW = _SeparablePower.name
 
 
 def available_laws() -> dict[str, str]:
-    """Return a mapping from law name to a one-line description.
-
-    Examples:
-        >>> for name, description in available_laws().items():
-        ...     print(f"{name}: {description}")
-        separable-power: E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
-        multiplicative-power: E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
-    """
+    """Return a mapping from law name to a one-line description."""
     return {name: law.description for name, law in _LAWS.items()}
 
 
 def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) -> LawInstance:
-    """Instantiate a named law for a concrete set of predictor columns.
-
-    Args:
-        law: One of the names in :func:`available_laws`.
-        model_size: Model-size predictor columns.
-        dataset_size: Dataset-size predictor columns.
-
-    Returns:
-        The bound :class:`LawInstance`.
-
-    Raises:
-        LawError: If the law name is unknown or no predictors were supplied.
-
-    Examples:
-        >>> law = build_law("separable-power", ["model_size__n_params"], ["dataset_size__n_subj"])
-        >>> law.param_names
-        ('E', 'A', 'B', 'alpha', 'beta')
-        >>> law.n_linear, law.n_exponents
-        (3, 2)
-        >>> build_law("multiplicative-power", ["model_size__n"], ["dataset_size__d"]).param_names
-        ('E', 'A', 'alpha', 'beta')
-        >>> build_law("no-such-law", ["model_size__n"], [])
-        Traceback (most recent call last):
-        ...
-        simple_scaling_laws.laws.LawError: Unknown law 'no-such-law'; available: separable-power,
-        multiplicative-power
-    """
+    """Instantiate a named law for a concrete set of predictor columns."""
     if law not in _LAWS:
         raise LawError(f"Unknown law {law!r}; available: {', '.join(_LAWS)}")
     model_size, dataset_size = tuple(model_size), tuple(dataset_size)
