@@ -1,11 +1,10 @@
 """Point estimation of a scaling law and of the two variance components.
 
 Fitting happens on **run-level means**, weighted by how precisely each mean is known. The optimization
-exploits variable projection: for any candidate nonlinear parameter vector, the offset and amplitudes
-are solved exactly by bounded linear least squares. A small, parameter-kind-aware grid gives stable
-starting points, and the nonlinear optimizer only has to polish the best few. This remains far more
-reliable at small sample sizes than unconstrained random multistart and is fast enough to repeat in
-the bootstrap.
+exploits variable projection: for any candidate nonlinear parameter vector, the offset and amplitudes are
+solved exactly by bounded linear least squares. A small, parameter-kind-aware grid gives stable starting
+points, and the nonlinear optimizer only has to polish the best few. This remains far more reliable at small
+sample sizes than unconstrained random multistart and is fast enough to repeat in the bootstrap.
 """
 
 from __future__ import annotations
@@ -17,7 +16,16 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.optimize import least_squares, lsq_linear
 
-from .laws import AMPLITUDE, EXPONENT, MAX_EXPONENT, SCALE, SHIFT, LawInstance
+from .laws import (
+    AMPLITUDE,
+    EXPONENT,
+    MAX_EXPONENT,
+    POSITIVE_SCALE,
+    SCALE,
+    SHIFT,
+    SIGNED_EXPONENT,
+    LawInstance,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -26,6 +34,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: Candidate exponent values used to seed the optimizer.
 EXPONENT_GRID: tuple[float, ...] = (0.01, 0.03, 0.08, 0.2, 0.5, 1.2)
+SIGNED_EXPONENT_GRID: tuple[float, ...] = (-1.2, -0.5, -0.2, -0.08, 0.0, 0.08, 0.2, 0.5, 1.2)
 
 #: Candidate normalized additive shifts. Zero recovers an ordinary power law.
 SHIFT_GRID: tuple[float, ...] = (0.0, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0)
@@ -36,6 +45,7 @@ SCALE_GRID: tuple[float, ...] = (0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
 #: Conservative finite bounds for normalized shifts and ratios.
 MAX_SHIFT = 10.0
 MAX_SCALE = 100.0
+MIN_POSITIVE_SCALE = 1e-6
 
 #: Cap on nonlinear grid combinations evaluated for a law.
 MAX_GRID_POINTS = 256
@@ -97,8 +107,9 @@ class Bounds:
 def parameter_bounds(law: LawInstance, y: np.ndarray, signed_amplitude: bool) -> Bounds:
     """Data-driven box constraints for a law's parameters.
 
-    Exponents, shifts, and positive scale ratios are non-negative. Loss amplitudes are non-negative;
-    metric amplitudes may be signed. Offsets retain the same generous data-driven box as before.
+    Ordinary exponents, shifts, and scale ratios are non-negative. Signed slope changes can move in either
+    direction, and break locations or sharpnesses use a strictly positive lower bound. Loss amplitudes are
+    non-negative; metric amplitudes may be signed. Offsets retain the same generous data-driven box as before.
     """
     y = np.asarray(y, dtype=float)
     spread = float(y.max() - y.min())
@@ -109,11 +120,17 @@ def parameter_bounds(law: LawInstance, y: np.ndarray, signed_amplitude: bool) ->
             case _ if kind == EXPONENT:
                 lower.append(0.0)
                 upper.append(MAX_EXPONENT)
+            case _ if kind == SIGNED_EXPONENT:
+                lower.append(-MAX_EXPONENT)
+                upper.append(MAX_EXPONENT)
             case _ if kind == SHIFT:
                 lower.append(0.0)
                 upper.append(MAX_SHIFT)
             case _ if kind == SCALE:
                 lower.append(0.0)
+                upper.append(MAX_SCALE)
+            case _ if kind == POSITIVE_SCALE:
+                lower.append(MIN_POSITIVE_SCALE)
                 upper.append(MAX_SCALE)
             case _ if kind == AMPLITUDE:
                 lower.append(-AMPLITUDE_BOUND_FACTOR * scale if signed_amplitude else 0.0)
@@ -128,9 +145,11 @@ def _grid_for_kind(kind: str) -> tuple[float, ...]:
     """Candidate seed values for one nonlinear parameter kind."""
     if kind == EXPONENT:
         return EXPONENT_GRID
+    if kind == SIGNED_EXPONENT:
+        return SIGNED_EXPONENT_GRID
     if kind == SHIFT:
         return SHIFT_GRID
-    if kind == SCALE:
+    if kind in (SCALE, POSITIVE_SCALE):
         return SCALE_GRID
     raise ValueError(f"No nonlinear seed grid for parameter kind {kind!r}")
 
@@ -162,9 +181,9 @@ def _solve_linear(a: np.ndarray, b: np.ndarray, low: np.ndarray, high: np.ndarra
 class GridSeeder:
     """Reusable variable-projection restarts for a fixed design, weights and bounds.
 
-    For each candidate nonlinear vector, the linear coefficients are solved exactly. The resulting
-    design matrices and pseudo-inverses are reusable across bootstrap draws because predictors and
-    fitting weights do not change.
+    For each candidate nonlinear vector, the linear coefficients are solved exactly. The resulting design
+    matrices and pseudo-inverses are reusable across bootstrap draws because predictors and fitting weights do
+    not change.
     """
 
     def __init__(self, law: LawInstance, log_x: np.ndarray, weights: np.ndarray, bounds: Bounds):
@@ -173,9 +192,7 @@ class GridSeeder:
         self.bounds = bounds
         self.sqrt_w = np.sqrt(np.asarray(weights, dtype=float))
         self.nonlinear = _nonlinear_grid(law)
-        self.designs = [
-            self.sqrt_w[:, None] * law.design(nonlinear, log_x) for nonlinear in self.nonlinear
-        ]
+        self.designs = [self.sqrt_w[:, None] * law.design(nonlinear, log_x) for nonlinear in self.nonlinear]
         self.pseudo_inverses = [np.linalg.pinv(design) for design in self.designs]
         self.low = bounds.lower[: law.n_linear]
         self.high = bounds.upper[: law.n_linear]
@@ -270,9 +287,12 @@ def is_constant(y: np.ndarray) -> bool:
 
 
 def constant_fit(law: LawInstance, y: np.ndarray) -> CurveFit:
-    """The exact fit for a target with no variation: offset alone, every other term zero."""
+    """The exact fit for a target with no variation: offset alone, every other linear term zero."""
     params = np.zeros(law.n_params, dtype=float)
     params[0] = float(np.mean(y))
+    for i, kind in enumerate(law.param_kinds):
+        if kind == POSITIVE_SCALE:
+            params[i] = 1.0
     return CurveFit(
         params=params,
         cost=0.0,
