@@ -653,6 +653,10 @@ consumed at the level the bootstrap resamples at, and a Student's-t rather than 
 the interval endpoints -- and take measured coverage to **91-95%** across the designs this package
 targets. `tests/test_coverage.py` re-measures this on every CI run, so it cannot silently regress.
 
+That calibration was measured on `separable-power`. Every other law is held to the same test
+(`tests/test_law_families.py`), and its section above reports what it measured. `broken-power` does
+not meet it, and says so on every fit rather than leaving you to find out.
+
 **Correlations are computed across runs.** Loss/metric correlations use run-level means, with
 intervals from resampling configurations. The naive evaluation-row correlation is reported alongside
 purely so its inflation is visible:
