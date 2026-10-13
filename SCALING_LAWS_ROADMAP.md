@@ -15,18 +15,18 @@ The fitter is intentionally optimized around **variable projection**: conditiona
 
 Recommended first addition:
 
-\[
+```math
 L(N,D) = E + A N^{-\alpha} + B D^{-\beta} - C N^{-\gamma}D^{-\delta},
-\]
+```
 
 with nonnegative `A`, `B`, and `C` for losses.
 
 The negative interaction term allows the marginal effect of increasing model size to reverse when data are scarce:
 
-\[
+```math
 \frac{\partial L}{\partial \log N}
 = -\alpha A N^{-\alpha} + \gamma C N^{-\gamma}D^{-\delta}.
-\]
+```
 
 At small `D`, the second term can dominate and make larger models worse; at large `D`, the interaction vanishes and the ordinary model-scaling term dominates.
 
@@ -43,15 +43,15 @@ Implementation notes:
 
 Kaplan et al. (2020) propose
 
-\[
+```math
 L(N,D)=\left[\left(\frac{N_c}{N}\right)^{\alpha_N/\alpha_D}+\frac{D_c}{D}\right]^{\alpha_D}.
-\]
+```
 
 A package-compatible version may add an irreducible floor:
 
-\[
+```math
 f(n,d)=E+A\left[n^{-\alpha_N/\alpha_D}+R d^{-1}\right]^{\alpha_D},
-\]
+```
 
 where `n` and `d` are normalized predictors.
 
@@ -63,9 +63,9 @@ Because `R` is a nonlinear scale parameter rather than an exponent, this law sho
 
 A useful small-scale correction is
 
-\[
+```math
 f(n,d)=E+A(n+s_N)^{-\alpha}+B(d+s_D)^{-\beta}.
-\]
+```
 
 The shift prevents divergence as a predictor approaches zero and can fit observations before the clean asymptotic power-law regime. Related shifted forms appear in scaling-law work including Zhai et al. (2022) and Bansal et al. (2022); Caballero et al. discuss this class as M3.
 
@@ -75,29 +75,29 @@ The shifts `s_N` and `s_D` are nonlinear parameters but amplitudes remain linear
 
 Alabdulmohsin, Neyshabur, and Zhai (2022) propose
 
-\[
+```math
 \frac{\epsilon_x-\epsilon_\infty}{(\epsilon_0-\epsilon_x)^\lambda}=\beta x^c,
-\]
+```
 
 where `epsilon_0` is the small-scale/random-guessing plateau and `epsilon_inf` the large-scale limit.
 
 A multidimensional extension is
 
-\[
+```math
 \frac{f-E}{(I-f)^\lambda}=g(n,d),
-\]
+```
 
 with a simple choice
 
-\[
+```math
 g(n,d)=A n^{-\alpha}+B d^{-\beta}.
-\]
+```
 
 For `lambda = 1`, the response is explicit:
 
-\[
+```math
 f=\frac{E+I g}{1+g}.
-\]
+```
 
 A good implementation sequence is therefore:
 
@@ -112,17 +112,17 @@ The existing automatic logit transform for `[0,1]` metrics must also be reconcil
 
 Caballero et al. (2022) propose Broken Neural Scaling Laws (BNSL):
 
-\[
+```math
 y=a+b x^{-c_0}\prod_{i=1}^{K}\left(1+\left(\frac{x}{d_i}\right)^{1/f_i}\right)^{-c_i f_i}.
-\]
+```
 
 BNSLs can represent multiple slope regimes, delayed transitions, inflection points, and non-monotonic behavior including double descent.
 
 Start conservatively with a single break (`K=1`) and strong identifiability diagnostics. A later model/data variant can define a capacity ratio
 
-\[
+```math
 z=N^\rho/D^\eta
-\]
+```
 
 and fit a broken law in `z`, motivated by Kaplan-style overfitting ratios and the movement of double-descent thresholds with dataset size.
 
