@@ -137,9 +137,7 @@ class LawInstance:
         design = self.design(nonlinear, log_x)
         jac = np.empty((log_x.shape[0], self.n_params), dtype=float)
         jac[:, : self.n_linear] = design
-        jac[:, self.n_linear :] = _NONLINEAR_GRADS[self.law](
-            self, linear, nonlinear, design, log_x
-        )
+        jac[:, self.n_linear :] = _NONLINEAR_GRADS[self.law](self, linear, nonlinear, design, log_x)
         return jac
 
     def raw_scale_params(self, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
@@ -365,11 +363,7 @@ class _SeparableInteractionPower:
         del nonlinear
         n_predictors = len(law.predictors)
         grad = np.empty((log_x.shape[0], 2 * n_predictors), dtype=float)
-        grad[:, :n_predictors] = (
-            -linear[None, 1 : 1 + n_predictors]
-            * log_x
-            * design[:, 1 : 1 + n_predictors]
-        )
+        grad[:, :n_predictors] = -linear[None, 1 : 1 + n_predictors] * log_x * design[:, 1 : 1 + n_predictors]
         grad[:, n_predictors:] = -linear[-1] * log_x * design[:, -1, None]
         return grad
 
@@ -482,7 +476,9 @@ class _KaplanJointPower:
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
         if len(model_size) != 1 or len(dataset_size) != 1:
-            raise LawError("'kaplan-joint-power' requires exactly one model-size and one dataset-size predictor")
+            raise LawError(
+                "'kaplan-joint-power' requires exactly one model-size and one dataset-size predictor"
+            )
         return LawInstance(
             law=_KaplanJointPower.name,
             model_size=model_size,
@@ -513,7 +509,7 @@ class _KaplanJointPower:
         joint = n_term + ratio[:, None] * d_term
         out = np.empty((nonlinear.shape[0], log_x.shape[0], 2), dtype=float)
         out[:, :, 0] = 1.0
-        out[:, :, 1] = joint**beta[:, None]
+        out[:, :, 1] = joint ** beta[:, None]
         return out
 
     @staticmethod
@@ -547,12 +543,106 @@ class _KaplanJointPower:
         return values
 
 
+class _BoundedRationalPower:
+    """Bounded small-scale law using the explicit ``lambda=1`` M4 response link.
+
+    Let ``g(x) = sum_i A_i * x_i**-alpha_i`` with positive scale coefficients. The response is
+    ``f(x) = (E + I*g(x)) / (1 + g(x))``. Thus ``f -> E`` as every resource grows and ``f -> I``
+    when any positive-power resource becomes extremely small. Conditional on the scale coefficients
+    and exponents, the response is linear in the two limits ``E`` and ``I``.
+
+    The one-dimensional response relation is the ``lambda=1`` special case of M4 from
+    Alabdulmohsin, Neyshabur, and Zhai (2022). The multidimensional separable ``g`` used here is a
+    package-level extension, not the full learnable-lambda M4 law.
+    """
+
+    name: ClassVar[str] = "bounded-rational-power"
+    description: ClassVar[str] = "(E + I*g)/(1 + g), g=sum_i A_i*x_i**-alpha_i (bounded M4 lambda=1)"
+
+    @staticmethod
+    def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
+        predictors = model_size + dataset_size
+        scales = _names("A", model_size) + _names("B", dataset_size)
+        exps = _names("alpha", model_size) + _names("beta", dataset_size)
+        return LawInstance(
+            law=_BoundedRationalPower.name,
+            model_size=model_size,
+            dataset_size=dataset_size,
+            param_names=("E", "I", *scales, *exps),
+            param_kinds=(
+                OFFSET,
+                OFFSET,
+                *([SCALE] * len(predictors)),
+                *([EXPONENT] * len(predictors)),
+            ),
+            exponent_predictor=tuple(range(len(predictors))),
+        )
+
+    @staticmethod
+    def _components(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        n = len(law.predictors)
+        scales, exponents = nonlinear[:n], nonlinear[n:]
+        powers = np.exp(-log_x * exponents[None, :])
+        return scales, powers
+
+    @staticmethod
+    def design(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        scales, powers = _BoundedRationalPower._components(law, nonlinear, log_x)
+        g = (powers * scales[None, :]).sum(axis=1)
+        denominator = 1.0 + g
+        out = np.empty((log_x.shape[0], 2), dtype=float)
+        out[:, 0] = 1.0 / denominator
+        out[:, 1] = g / denominator
+        return out
+
+    @staticmethod
+    def many_designs(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        n = len(law.predictors)
+        scales, exponents = nonlinear[:, :n], nonlinear[:, n:]
+        powers = np.exp(-exponents[:, None, :] * log_x[None, :, :])
+        g = (powers * scales[:, None, :]).sum(axis=2)
+        denominator = 1.0 + g
+        out = np.empty((nonlinear.shape[0], log_x.shape[0], 2), dtype=float)
+        out[:, :, 0] = 1.0 / denominator
+        out[:, :, 1] = g / denominator
+        return out
+
+    @staticmethod
+    def nonlinear_grad(
+        law: LawInstance,
+        linear: np.ndarray,
+        nonlinear: np.ndarray,
+        design: np.ndarray,
+        log_x: np.ndarray,
+    ) -> np.ndarray:
+        del design
+        n = len(law.predictors)
+        scales, powers = _BoundedRationalPower._components(law, nonlinear, log_x)
+        g = (powers * scales[None, :]).sum(axis=1)
+        factor = (linear[1] - linear[0]) / (1.0 + g) ** 2
+        grad = np.empty((log_x.shape[0], 2 * n), dtype=float)
+        grad[:, :n] = factor[:, None] * powers
+        grad[:, n:] = -factor[:, None] * scales[None, :] * log_x * powers
+        return grad
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        values = _values(law, params)
+        n = len(law.predictors)
+        nonlinear = params[law.n_linear :]
+        scales, exponents = nonlinear[:n], nonlinear[n:]
+        for i, name in enumerate(law.param_names[law.n_linear : law.n_linear + n]):
+            values[name] = float(scales[i] * reference[i] ** exponents[i])
+        return values
+
+
 _LAW_TYPES = (
     _SeparablePower,
     _MultiplicativePower,
     _SeparableInteractionPower,
     _ShiftedSeparablePower,
     _KaplanJointPower,
+    _BoundedRationalPower,
 )
 _LAWS: dict[str, Any] = {law.name: law for law in _LAW_TYPES}
 _DESIGNS = {name: law.design for name, law in _LAWS.items()}
