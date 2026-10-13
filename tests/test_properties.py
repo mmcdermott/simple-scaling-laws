@@ -34,7 +34,9 @@ exponents = st.floats(min_value=0.0, max_value=MAX_EXPONENT, allow_nan=False, al
 
 
 def _law(name, n_model, n_dataset):
-    """Build a law over synthetic predictor names."""
+    """Build a law over synthetic predictor names, honoring law-specific arity."""
+    if name == "kaplan-joint-power":
+        n_model, n_dataset = 1, 1
     return build_law(
         name,
         [f"model_size__m{i}" for i in range(n_model)],
@@ -54,9 +56,14 @@ def test_analytic_jacobian_matches_finite_differences(name, n_model, n_dataset, 
     """The hand-written derivatives must agree with numerical ones."""
     law = _law(name, n_model, n_dataset)
     rng = np.random.default_rng(seed)
-    n_points = max(3, len(scales) // max(1, law.n_exponents))
+    n_points = max(3, len(scales) // max(1, law.n_nonlinear))
     log_x = np.log(rng.choice(np.asarray(scales), size=(n_points, len(law.predictors))))
-    params = np.concatenate([rng.uniform(-2.0, 2.0, law.n_linear), rng.uniform(0.0, 1.5, law.n_exponents)])
+    params = np.concatenate(
+        [
+            rng.uniform(-2.0, 2.0, law.n_linear),
+            rng.uniform(0.01, 1.5, law.n_nonlinear),
+        ]
+    )
 
     analytic = law.jacobian(params, log_x)
     numerical = np.zeros_like(analytic)
@@ -86,10 +93,10 @@ def test_vectorized_evaluation_matches_the_scalar_one(name, n_model, n_dataset, 
     draws = np.column_stack(
         [
             rng.uniform(-2.0, 2.0, size=(n_draws, law.n_linear)),
-            rng.uniform(0.0, 1.5, size=(n_draws, law.n_exponents)),
+            rng.uniform(0.01, 1.5, size=(n_draws, law.n_nonlinear)),
         ]
     )
-    expected = np.array([law.evaluate(p, log_x) for p in draws])
+    expected = np.array([law.evaluate(params, log_x) for params in draws])
     assert np.allclose(law.evaluate_many(draws, log_x), expected, rtol=1e-12, atol=1e-12)
 
 
@@ -102,7 +109,7 @@ def test_vectorized_evaluation_matches_the_scalar_one(name, n_model, n_dataset, 
 )
 @settings(max_examples=100, deadline=None)
 def test_a_loss_law_never_increases_with_scale(offset, amplitudes, exponent_values, low, ratio):
-    """Non-negative amplitudes and exponents are exactly what make a loss law monotone."""
+    """Non-negative amplitudes and exponents are exactly what make a separable loss monotone."""
     n = min(len(amplitudes), len(exponent_values))
     law = _law("separable-power", n, 0)
     params = np.array([offset, *amplitudes[:n], *exponent_values[:n]])
@@ -118,7 +125,7 @@ def test_a_loss_law_never_increases_with_scale(offset, amplitudes, exponent_valu
 )
 @settings(max_examples=100, deadline=None)
 def test_parameter_bounds_are_ordered_and_contain_a_sensible_point(values, signed, name):
-    """Bounds must be a real box, and must admit the constant fit at the data's own level."""
+    """Bounds must be ordered and admit the constant fit at the data's own level."""
     law = _law(name, 1, 1)
     y = np.array(values)
     bounds = parameter_bounds(law, y, signed_amplitude=signed)
@@ -262,16 +269,16 @@ def test_discovery_finds_every_prefixed_column_and_ignores_the_rest(suffixes, ex
     """Role assignment depends only on the prefix, whatever else the table contains."""
     assume(not any(e.startswith(("model_size__", "test_loss__")) for e in extra))
     columns = ["training_run_id"]
-    columns += [f"model_size__{s}" for s in suffixes]
-    columns += [f"dataset_size__{s}" for s in suffixes]
-    columns += [f"test_loss__{s}" for s in suffixes]
+    columns += [f"model_size__{suffix}" for suffix in suffixes]
+    columns += [f"dataset_size__{suffix}" for suffix in suffixes]
+    columns += [f"test_loss__{suffix}" for suffix in suffixes]
     columns += extra
     schema = discover_schema(columns)
     assert len(schema.model_size) == len(suffixes)
     assert len(schema.dataset_size) == len(suffixes)
     assert len(schema.targets) == len(suffixes)
     assert schema.primary_target.startswith("test_loss__")
-    assert all(e not in schema.target_names and e not in schema.predictors for e in extra)
+    assert all(extra_name not in schema.target_names and extra_name not in schema.predictors for extra_name in extra)
 
 
 @given(values=st.lists(finite_floats, min_size=1, max_size=20))
@@ -294,9 +301,9 @@ def test_law_structure_is_self_consistent_and_round_trips(name, n_model, n_datas
     law = _law(name, n_model, n_dataset)
     assert len(law.param_names) == len(law.param_kinds) == law.n_params
     assert len(set(law.param_names)) == law.n_params
-    assert law.n_linear + law.n_exponents == law.n_params
+    assert law.n_linear + law.n_nonlinear == law.n_params
     assert len(law.exponent_predictor) == law.n_exponents
-    assert set(law.exponent_predictor).issubset(range(n_model + n_dataset))
+    assert set(law.exponent_predictor).issubset(range(len(law.predictors)))
     assert sorted(law.display_names) == sorted(law.param_names)
     assert LawInstance.from_dict(law.to_dict()) == law
 
@@ -313,6 +320,6 @@ def test_at_bound_only_reports_parameters_on_a_boundary(lower, widths):
     bounds = Bounds(low, high)
     names = ("a", "b", "c")
     midpoints = (low + high) / 2
-    interior = [n for n, w in zip(names, widths, strict=True) if w > 1e-3]
+    interior = [name for name, width in zip(names, widths, strict=True) if width > 1e-3]
     assert set(bounds.at_bound(midpoints, names)).isdisjoint(interior)
     assert set(bounds.at_bound(low, names)) == set(names)
