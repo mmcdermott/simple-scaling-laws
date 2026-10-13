@@ -152,19 +152,18 @@ Three law families, all linear in their offset and amplitudes and nonlinear only
 ```pycon
 >>> from simple_scaling_laws import available_laws
 >>> for name, description in available_laws().items():
-...     print(f"{name:<30} {description}")
-separable-power                E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
-multiplicative-power           E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
-separable-interaction-power    E + separable powers - C * joint power (model/data interaction with a low-scale penalty)
+...     print(f"{name}\n    {description}")
+separable-power
+    E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
+multiplicative-power
+    E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
+separable-interaction-power
+    E + sum_i A_i * x_i**-alpha_i - C * prod_i x_i**-gamma_i (separable terms minus a joint term)
 
 ```
 
 With one model-size and one dataset-size column, `separable-power` is the conventional
-`E + A·N^-α + B·D^-β`. The interaction family extends this to
-`E + A·N^-α + B·D^-β - C·N^-γ·D^-δ`. For losses, `A`, `B`, and `C` are constrained non-negative.
-The negative joint term can therefore make increasing model size harmful when data are scarce while
-vanishing as data scale grows. This exact form is a package-level interaction extension motivated by
-the joint model/data dependence reported by Kaplan et al. (2020), not a named law from that paper.
+`E + A·N^-α + B·D^-β`.
 
 Losses are fit with non-negative amplitudes, which gives the usual "irreducible floor plus decaying
 terms" reading. Metrics get free-signed amplitudes so an increasing metric such as AUROC can approach
@@ -176,6 +175,76 @@ its asymptote from below:
 True
 
 ```
+
+### When model size and data interact
+
+`separable-power` makes the effect of model size the same at every dataset size. That is the
+assumption most likely to fail in a small-data experiment, where a larger model can be *worse* when
+data are scarce and better when they are not. `separable-interaction-power` adds one joint term to
+allow it:
+
+`E + A·N^-α + B·D^-β − C·N^-γ·D^-δ`
+
+The joint term is subtracted, and fades as either scale grows, so it bends the surface most where
+both are small. It is a package-level extension motivated by the model/data coupling in Kaplan et
+al. (2020), not a law named there.
+
+```pycon
+>>> truth = {"E": 1.0, "A": 2.0, "B": 3.0, "C": 1.5, "alpha": 0.3, "beta": 0.3, "gamma": 0.15, "delta": 0.3}
+>>> grid = {"model_sizes": (1e6, 1e7, 1e8, 1e9), "dataset_sizes": (1e3, 1e4, 1e5, 1e6)}
+>>> coupled = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     law="separable-interaction-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> interaction = fit(coupled, law="separable-interaction-power", n_draws=200, seed=0)
+>>> sweep = interaction.predict(
+...     {
+...         "model_size__n_params": [1e6, 1e7, 1e8, 1e9] * 2,
+...         "dataset_size__n_subjects": [1e3] * 4 + [1e6] * 4,
+...     }
+... )
+>>> losses = [round(v, 2) for v in sweep["test_loss__cross_entropy__median"]]
+>>> losses[:4]  # scarce data: the loss turns back up as the model grows
+[8.0, 7.25, 7.32, 7.66]
+>>> losses[4:]  # ample data: bigger is simply better
+[6.8, 4.26, 3.04, 2.46]
+
+```
+
+It costs three more parameters than the separable law -- eight for one model-size and one
+dataset-size column -- so it wants at least a 4x4 grid; on the 3x3 grid that suits the separable law
+it is reported as `too_few_configurations`. Measured on 4x4 designs, its nominal 95% prediction
+intervals covered the truth 92-98% of the time, inside the grid and a decade beyond it.
+
+When the data contain no interaction, the joint term has nothing of its own to fit and can only
+imitate the separable terms. The curve is still right, but the individual parameters -- the
+asymptote `E` included -- are an accident of the optimizer, and the fit says so:
+
+```pycon
+>>> separable = simulate_runs(
+...     {"test_loss__cross_entropy": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}},
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> overfit = fit(separable, law="separable-interaction-power", n_draws=200, seed=0)
+>>> note = next(note for note in overfit.warnings if note.code == "ill_conditioned_fit")
+>>> note.details["parameters"]
+['E', 'C']
+
+```
+
+Treat that note as the instruction to drop back to `separable-power`, which this law contains
+exactly at `C = 0`.
 
 ## Bounded metrics
 
@@ -476,7 +545,8 @@ parametric_uncertainty - warning
 Detected conditions include: too few distinct configurations, fewer configurations than parameters,
 **a predictor measured at fewer than three distinct scales**, a predictor held fixed, collinear
 predictors, a single run per configuration, no repeated evaluations, optimizer non-convergence,
-parameters pinned to a bound, weakly identified exponents, lack of fit, a constant target, no
+parameters pinned to a bound, weakly identified exponents, parameters that trade off against each
+other without changing the curve, lack of fit, a constant target, no
 uncertainty information at all, and extrapolation at predict time.
 
 The three-scales rule deserves its own note, because it is the one failure widening cannot rescue.

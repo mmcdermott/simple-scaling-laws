@@ -118,6 +118,12 @@ class LawInstance:
 
         Returns:
             Predicted values, shape ``(n_obs,)``.
+
+        Examples:
+            >>> law = build_law("separable-power", ("model_size__n",), ("dataset_size__d",))
+            >>> log_x = np.log(np.array([[1.0, 1.0], [4.0, 1.0]]))
+            >>> law.evaluate(np.array([1.0, 2.0, 3.0, 0.5, 0.25]), log_x).round(4)
+            array([6., 5.])
         """
         params = np.asarray(params, dtype=float)
         linear = params[: self.n_linear]
@@ -127,12 +133,23 @@ class LawInstance:
     def evaluate_many(self, params: np.ndarray, log_x: np.ndarray) -> np.ndarray:
         """Evaluate the law for many parameter vectors at once.
 
+        This is how prediction propagates uncertainty: every bootstrap draw is evaluated at every
+        requested point in one vectorized pass.
+
         Args:
             params: Parameter vectors, shape ``(n_draws, n_params)``.
             log_x: Natural log of the normalized predictors, shape ``(n_points, n_predictors)``.
 
         Returns:
             Predicted values, shape ``(n_draws, n_points)``.
+
+        Examples:
+            >>> law = build_law("separable-power", ("model_size__n",), ("dataset_size__d",))
+            >>> log_x = np.log(np.array([[1.0, 1.0], [4.0, 1.0]]))
+            >>> draws = np.array([[1.0, 2.0, 3.0, 0.5, 0.25], [1.0, 2.0, 3.0, 1.0, 0.25]])
+            >>> law.evaluate_many(draws, log_x)
+            array([[6. , 5. ],
+                   [6. , 4.5]])
         """
         params = np.atleast_2d(np.asarray(params, dtype=float))
         linear = params[:, : self.n_linear]
@@ -162,12 +179,31 @@ class LawInstance:
     def raw_scale_params(self, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
         """Restate fitted parameters in raw predictor units.
 
+        Fitting happens on normalized predictors ``x / reference``. Exponents do not depend on that
+        choice but amplitudes do, and *how* they depend on it is a property of the law's algebra --
+        a separable amplitude absorbs one predictor's reference, a joint amplitude absorbs all of
+        them -- so each law family owns its own conversion.
+
         Args:
-            params: Parameter vector of length :attr:`n_params`.
-            reference: Normalization constant for each predictor.
+            params: Parameter vector of length :attr:`n_params`, on normalized predictors.
+            reference: Normalization constant for each predictor, shape ``(n_predictors,)``.
 
         Returns:
-            A mapping from parameter name to raw-scale value.
+            A mapping from parameter name to its raw-scale value.
+
+        Examples:
+            >>> law = build_law("separable-power", ("model_size__n",), ("dataset_size__d",))
+            >>> raw = law.raw_scale_params(np.array([1.0, 2.0, 3.0, 0.5, 0.25]), np.array([100.0, 16.0]))
+            >>> raw["A"], raw["B"], raw["alpha"]
+            (20.0, 6.0, 0.5)
+
+            Evaluating the raw-scale parameters at raw predictor values gives the same curve:
+
+            >>> x = np.array([[400.0, 81.0]])
+            >>> normalized = law.evaluate(np.array([1.0, 2.0, 3.0, 0.5, 0.25]), np.log(x / [100.0, 16.0]))
+            >>> raw_vector = np.array([raw[name] for name in law.param_names])
+            >>> bool(np.isclose(law.evaluate(raw_vector, np.log(x)), normalized)[0])
+            True
         """
         return _RAW_SCALE[self.law](self, np.asarray(params, dtype=float), np.asarray(reference, dtype=float))
 
@@ -184,7 +220,13 @@ class LawInstance:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LawInstance:
-        """Rebuild from :meth:`to_dict` output."""
+        """Rebuild from :meth:`to_dict` output.
+
+        Examples:
+            >>> law = build_law("multiplicative-power", ("model_size__n",), ("dataset_size__d",))
+            >>> LawInstance.from_dict(law.to_dict()) == law
+            True
+        """
         return cls(
             law=data["law"],
             model_size=tuple(data["model_size"]),
@@ -209,12 +251,16 @@ def _names(base: str, columns: Sequence[str]) -> list[str]:
 
 
 def _values(law: LawInstance, params: np.ndarray) -> dict[str, float]:
-    """Map a parameter vector to names without changing scale."""
+    """Map a parameter vector to its names, leaving every value on its current scale."""
     return dict(zip(law.param_names, (float(v) for v in params), strict=True))
 
 
 class _SeparablePower:
-    """``f(x) = E + sum_i A_i * x_i ** -alpha_i``."""
+    """``f(x) = E + sum_i A_i * x_i ** -alpha_i``.
+
+    With one model-size and one dataset-size predictor this is the conventional
+    ``E + A N**-alpha + B D**-beta`` form.
+    """
 
     name: ClassVar[str] = "separable-power"
     description: ClassVar[str] = "E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)"
@@ -243,7 +289,7 @@ class _SeparablePower:
 
     @staticmethod
     def many_designs(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Design matrices for many exponent vectors at once."""
+        """Design matrices for many exponent vectors at once, shape ``(n_draws, n_points, n_linear)``."""
         out = np.empty((exponents.shape[0], log_x.shape[0], law.n_linear), dtype=float)
         out[:, :, 0] = 1.0
         out[:, :, 1:] = np.exp(-exponents[:, None, :] * log_x[None, :, :])
@@ -258,7 +304,7 @@ class _SeparablePower:
 
     @staticmethod
     def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
-        """Convert separable amplitudes from normalized to raw predictor units."""
+        """``A_i`` on normalized predictors is ``A_i * reference_i**alpha_i`` on raw ones."""
         values = _values(law, params)
         exponents = params[law.n_linear :]
         for i, name in enumerate(law.param_names[1 : law.n_linear]):
@@ -267,7 +313,11 @@ class _SeparablePower:
 
 
 class _MultiplicativePower:
-    """``f(x) = E + A * prod_i x_i ** -alpha_i``."""
+    """``f(x) = E + A * prod_i x_i ** -alpha_i``.
+
+    The joint-power alternative to :class:`_SeparablePower`: a single amplitude, one exponent per
+    predictor, and no separate per-predictor asymptote.
+    """
 
     name: ClassVar[str] = "multiplicative-power"
     description: ClassVar[str] = "E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)"
@@ -295,7 +345,7 @@ class _MultiplicativePower:
 
     @staticmethod
     def many_designs(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Design matrices for many exponent vectors at once."""
+        """Design matrices for many exponent vectors at once, shape ``(n_draws, n_points, 2)``."""
         out = np.empty((exponents.shape[0], log_x.shape[0], 2), dtype=float)
         out[:, :, 0] = 1.0
         out[:, :, 1] = np.exp(-(exponents[:, None, :] * log_x[None, :, :]).sum(axis=2))
@@ -310,100 +360,103 @@ class _MultiplicativePower:
 
     @staticmethod
     def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
-        """Convert the joint amplitude from normalized to raw predictor units."""
+        """The single amplitude absorbs every predictor's reference: ``A * prod_i ref_i**alpha_i``."""
         values = _values(law, params)
         values["A"] *= float(np.prod(reference ** params[law.n_linear :]))
         return values
 
 
 class _SeparableInteractionPower:
-    """Separable main effects plus a low-scale joint interaction.
+    """``f(x) = E + sum_i A_i * x_i ** -alpha_i - C * prod_i x_i ** -gamma_i``.
 
-    For one model-size predictor ``N`` and one dataset-size predictor ``D`` the law is
-    ``E + A*N**-alpha + B*D**-beta - C*N**-gamma*D**-delta``. With non-negative loss amplitudes,
-    the negative joint term can make increasing model size harmful in low-data regimes while the
-    interaction vanishes at large data scale.
+    With one model-size predictor ``N`` and one dataset-size predictor ``D`` this is
+    ``E + A N**-alpha + B D**-beta - C N**-gamma D**-delta``: the separable law plus one joint term
+    that fades as either scale grows.
 
-    With multiple predictors, the main effects remain separable and the interaction is one joint
-    product over all predictors. This keeps the family compatible with the generic property tests
-    and with experiments that expose more than one scale coordinate.
+    **Why the joint term is subtracted.** The separable law forces the effect of model size to be
+    the same at every dataset size. The observed failure of that assumption is one-sided: with
+    scarce data a larger model can be *worse*, and the penalty disappears as data grow. Differentiating,
+    ``d f / d log N = -alpha A N**-alpha + gamma C N**-gamma D**-delta``, so a subtracted joint term is
+    what makes the second, positive, piece available. Writing the sign into the basis rather than
+    freeing the sign of ``C`` keeps a loss's amplitudes non-negative, so the bounded linear solve --
+    and the "irreducible floor plus decaying terms" reading of ``E``, ``A`` and ``B`` -- is unchanged.
 
-    The form is a package-level power-law interaction motivated by the model/data coupling reported
-    by Kaplan et al. (2020); it is not a named law from that paper.
+    **What it costs.** Two exponents per predictor instead of one, so eight parameters where the
+    separable law has five. The joint term is also exactly aliased with a main effect whenever its
+    other exponents are zero (``C N**-gamma`` cancels against ``A N**-alpha`` at ``delta = 0``), so on
+    data with no real interaction ``C`` and its exponents are not identified and land on a bound.
+    That is reported as ``parameter_at_bound``; it is the signal to fall back to ``separable-power``,
+    which this law contains exactly at ``C = 0``.
+
+    With several predictors per role the main effects stay separable and the interaction is a single
+    joint product over all of them.
+
+    This form is a package-level extension motivated by the model/data coupling reported by Kaplan
+    et al. (2020), *Scaling Laws for Neural Language Models*. It is not a law named in that paper.
     """
 
     name: ClassVar[str] = "separable-interaction-power"
     description: ClassVar[str] = (
-        "E + separable powers - C * joint power (model/data interaction with a low-scale penalty)"
+        "E + sum_i A_i * x_i**-alpha_i - C * prod_i x_i**-gamma_i (separable terms minus a joint term)"
     )
 
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
         """Construct the :class:`LawInstance` for these predictors."""
         predictors = model_size + dataset_size
-        main_amps = _names("A", model_size) + _names("B", dataset_size)
-        main_exps = _names("alpha", model_size) + _names("beta", dataset_size)
-        interaction_exps = _names("gamma", model_size) + _names("delta", dataset_size)
+        amps = _names("A", model_size) + _names("B", dataset_size)
+        exps = _names("alpha", model_size) + _names("beta", dataset_size)
+        joint_exps = _names("gamma", model_size) + _names("delta", dataset_size)
         return LawInstance(
             law=_SeparableInteractionPower.name,
             model_size=model_size,
             dataset_size=dataset_size,
-            param_names=("E", *main_amps, "C", *main_exps, *interaction_exps),
-            param_kinds=(
-                OFFSET,
-                *([AMPLITUDE] * len(main_amps)),
-                AMPLITUDE,
-                *([EXPONENT] * (2 * len(predictors))),
-            ),
+            param_names=("E", *amps, "C", *exps, *joint_exps),
+            param_kinds=(OFFSET, *([AMPLITUDE] * (len(amps) + 1)), *([EXPONENT] * (2 * len(predictors)))),
+            # Every predictor carries two exponents: its main-effect one, then its joint-term one.
             exponent_predictor=tuple(range(len(predictors))) * 2,
         )
 
     @staticmethod
     def design(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Columns are the intercept, separable powers, and one negative joint power."""
-        n_predictors = len(law.predictors)
-        main = exponents[:n_predictors]
-        interaction = exponents[n_predictors:]
+        """Columns ``[1, x_1**-alpha_1, ..., x_k**-alpha_k, -prod_i x_i**-gamma_i]``."""
+        k = len(law.predictors)
         out = np.empty((log_x.shape[0], law.n_linear), dtype=float)
         out[:, 0] = 1.0
-        out[:, 1 : 1 + n_predictors] = np.exp(-log_x * main[None, :])
-        out[:, -1] = -np.exp(-(log_x * interaction[None, :]).sum(axis=1))
+        out[:, 1 : 1 + k] = np.exp(-log_x * exponents[None, :k])
+        out[:, -1] = -np.exp(-(log_x * exponents[None, k:]).sum(axis=1))
         return out
 
     @staticmethod
     def many_designs(law: LawInstance, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Design matrices for many exponent vectors at once."""
-        n_predictors = len(law.predictors)
-        main = exponents[:, :n_predictors]
-        interaction = exponents[:, n_predictors:]
+        """Design matrices for many exponent vectors at once, shape ``(n_draws, n_points, n_linear)``."""
+        k = len(law.predictors)
         out = np.empty((exponents.shape[0], log_x.shape[0], law.n_linear), dtype=float)
         out[:, :, 0] = 1.0
-        out[:, :, 1 : 1 + n_predictors] = np.exp(-main[:, None, :] * log_x[None, :, :])
-        out[:, :, -1] = -np.exp(-(interaction[:, None, :] * log_x[None, :, :]).sum(axis=2))
+        out[:, :, 1 : 1 + k] = np.exp(-exponents[:, None, :k] * log_x[None, :, :])
+        out[:, :, -1] = -np.exp(-(exponents[:, None, k:] * log_x[None, :, :]).sum(axis=2))
         return out
 
     @staticmethod
     def exponent_grad(
         law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray
     ) -> np.ndarray:
-        """Derivatives with respect to main-effect and interaction exponents."""
-        n_predictors = len(law.predictors)
-        grad = np.empty((log_x.shape[0], 2 * n_predictors), dtype=float)
-        grad[:, :n_predictors] = -linear[None, 1 : 1 + n_predictors] * log_x * design[:, 1 : 1 + n_predictors]
-        grad[:, n_predictors:] = -linear[-1] * log_x * design[:, -1, None]
+        """Main-effect exponents as in the separable law; joint ones scale the (negative) joint column."""
+        k = len(law.predictors)
+        grad = np.empty((log_x.shape[0], 2 * k), dtype=float)
+        grad[:, :k] = -linear[None, 1 : 1 + k] * log_x * design[:, 1 : 1 + k]
+        grad[:, k:] = -linear[-1] * log_x * design[:, -1:]
         return grad
 
     @staticmethod
     def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
-        """Convert main and interaction amplitudes to raw predictor units."""
+        """Main amplitudes absorb their own predictor's reference; ``C`` absorbs all of them."""
         values = _values(law, params)
-        n_predictors = len(law.predictors)
+        k = len(law.predictors)
         exponents = params[law.n_linear :]
-        main = exponents[:n_predictors]
-        interaction = exponents[n_predictors:]
-        for i, name in enumerate(law.param_names[1 : 1 + n_predictors]):
-            values[name] *= float(reference[i] ** main[i])
-        values["C"] *= float(np.prod(reference**interaction))
+        for i, name in enumerate(law.param_names[1 : 1 + k]):
+            values[name] *= float(reference[i] ** exponents[i])
+        values["C"] *= float(np.prod(reference ** exponents[k:]))
         return values
 
 
@@ -420,7 +473,16 @@ DEFAULT_LAW = _SeparablePower.name
 
 
 def available_laws() -> dict[str, str]:
-    """Return a mapping from law name to a one-line description."""
+    """Return a mapping from law name to a one-line description.
+
+    Examples:
+        >>> for name, description in available_laws().items():
+        ...     print(f"{name}: {description}")
+        separable-power: E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
+        multiplicative-power: E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
+        separable-interaction-power: E + sum_i A_i * x_i**-alpha_i - C * prod_i x_i**-gamma_i (separable
+        terms minus a joint term)
+    """
     return {name: law.description for name, law in _LAWS.items()}
 
 
@@ -437,6 +499,26 @@ def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) 
 
     Raises:
         LawError: If the law name is unknown or no predictors were supplied.
+
+    Examples:
+        >>> law = build_law("separable-power", ["model_size__n_params"], ["dataset_size__n_subj"])
+        >>> law.param_names
+        ('E', 'A', 'B', 'alpha', 'beta')
+        >>> law.n_linear, law.n_exponents
+        (3, 2)
+        >>> build_law("multiplicative-power", ["model_size__n"], ["dataset_size__d"]).param_names
+        ('E', 'A', 'alpha', 'beta')
+
+        The interaction law keeps the separable parameters and adds a joint amplitude with one more
+        exponent per predictor:
+
+        >>> build_law("separable-interaction-power", ["model_size__n"], ["dataset_size__d"]).param_names
+        ('E', 'A', 'B', 'C', 'alpha', 'beta', 'gamma', 'delta')
+        >>> build_law("no-such-law", ["model_size__n"], [])
+        Traceback (most recent call last):
+        ...
+        simple_scaling_laws.laws.LawError: Unknown law 'no-such-law'; available: separable-power,
+        multiplicative-power, separable-interaction-power
     """
     if law not in _LAWS:
         raise LawError(f"Unknown law {law!r}; available: {', '.join(_LAWS)}")
