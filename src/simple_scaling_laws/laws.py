@@ -86,8 +86,9 @@ SCALE_SPEC = NonlinearSpec(0.0, MAX_SCALE, SCALE_GRID)
 class LawInstance:
     """A scaling law bound to a concrete set of predictor columns.
 
-    A parameter vector is ordered ``[offset, *amplitudes, *nonlinear]``: the linear block first,
-    then the nonlinear block. :attr:`n_linear` splits the two. For the simplest laws the nonlinear
+    A parameter vector is ordered ``[*offsets, *amplitudes, *nonlinear]``: the linear block first,
+    then the nonlinear block. There is usually one offset, the large-scale limit; a law with a limit
+    at each end has two. :attr:`n_linear` splits the two. For the simplest laws the nonlinear
     block is only exponents; :attr:`nonlinear_kinds` says what it holds in general.
 
     Attributes:
@@ -816,6 +817,124 @@ class _KaplanJointPower:
         return values
 
 
+class _BoundedRationalPower:
+    """``f(x) = (E + I * g(x)) / (1 + g(x))`` with ``g(x) = sum_i A_i * x_i ** -alpha_i``.
+
+    Every other law here is unbounded at small scale: a power term grows without limit as its
+    predictor shrinks. A real loss does not. A classifier trained on almost nothing sits at chance,
+    and stays there -- a plateau ``I`` at the small end, as real as the floor ``E`` at the large one.
+    This law is a weighted average of the two, ``f = E / (1 + g) + I * g / (1 + g)``, with the weight
+    ``g`` an ordinary separable sum of power terms: large ``g`` (small scale) gives ``I``, small ``g``
+    (large scale) gives ``E``, and in between ``f - E`` falls off as a power law.
+
+    It is a special case of the **M4** estimator of Alabdulmohsin, Neyshabur & Zhai (2022),
+    *Revisiting Neural Scaling Laws in Language and Vision*, whose defining relation is
+    ``(eps_x - eps_inf) / (eps_0 - eps_x) ** alpha = beta * x ** c`` with ``c < 0``. Here ``eps_inf``
+    is ``E``, ``eps_0`` is ``I``, the right-hand side is ``g``, and the paper's shape exponent -- its
+    ``alpha``, unrelated to this package's power-law exponents -- is fixed at one. Only then can the
+    relation be solved for ``f`` in closed form, and only then is ``f`` linear in ``(E, I)`` given
+    ``g`` -- which is what lets the fitter solve both limits exactly instead of searching for them.
+    Summing ``g`` over several predictors is this package's arrangement; the paper's is a single
+    power term. The name records the form actually fit rather than claiming the full family.
+
+    **What it costs, and when not to use it.** One more parameter than the separable law, the
+    plateau. It is identified only if the experiment reaches far enough down to see the curve bend
+    toward it: on data that are still a clean power law, ``I`` runs off to its bound while the
+    ``A_i`` shrink to compensate, since ``I * A * x ** -alpha`` is all such data determine. That is
+    reported as ``parameter_at_bound`` or ``ill_conditioned_fit``, and is the cue to use
+    ``separable-power``.
+
+    Both limits are estimated from the data; neither is assumed. For a metric confined to ``[0, 1]``
+    the law is fit on the logit like every other, so ``E`` and ``I`` are then limits in logit units --
+    finite, and already inside the metric's range by construction.
+    """
+
+    name: ClassVar[str] = "bounded-rational-power"
+    description: ClassVar[str] = (
+        "(E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small scale, floor E at large)"
+    )
+
+    @staticmethod
+    def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
+        """Construct the :class:`LawInstance` for these predictors."""
+        predictors = model_size + dataset_size
+        weights = _names("A", model_size) + _names("B", dataset_size)
+        exps = _names("alpha", model_size) + _names("beta", dataset_size)
+        return LawInstance(
+            law=_BoundedRationalPower.name,
+            model_size=model_size,
+            dataset_size=dataset_size,
+            param_names=("E", "I", *weights, *exps),
+            # Two offsets and no amplitude: the law is linear in its two limits. The ``A_i`` sit
+            # inside the ratio, so they are nonlinear weights rather than amplitudes.
+            param_kinds=(OFFSET, OFFSET, *([SCALE] * len(predictors)), *([EXPONENT] * len(predictors))),
+            exponent_predictor=tuple(range(len(predictors))),
+        )
+
+    @staticmethod
+    def nonlinear_specs(law: LawInstance, log_x: np.ndarray | None) -> tuple[NonlinearSpec, ...]:
+        """A weight and an exponent per predictor.
+
+        A weight of one puts the centre of the design halfway between the two limits, so the usual ratio grid
+        -- centred on one -- starts the search where the bend is observable.
+        """
+        k = len(law.predictors)
+        return (*([SCALE_SPEC] * k), *([EXPONENT_SPEC] * k))
+
+    @staticmethod
+    def min_levels(law: LawInstance) -> tuple[int, ...]:
+        """Three levels each on a grid; four when a single predictor has to identify all four parameters."""
+        return (4,) if len(law.predictors) == 1 else (3,) * len(law.predictors)
+
+    @staticmethod
+    def _weight(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Each predictor's term ``A_i * x_i**-alpha_i`` and their sum ``g``."""
+        k = len(law.predictors)
+        terms = nonlinear[..., None, :k] * np.exp(-nonlinear[..., None, k:] * log_x)
+        return terms, terms.sum(axis=-1)
+
+    @staticmethod
+    def design(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Columns ``[1 / (1 + g), g / (1 + g)]``: the weights on ``E`` and on ``I``."""
+        _, g = _BoundedRationalPower._weight(law, nonlinear, log_x)
+        out = np.empty((log_x.shape[0], 2), dtype=float)
+        out[:, 0] = 1.0 / (1.0 + g)
+        out[:, 1] = g / (1.0 + g)
+        return out
+
+    @staticmethod
+    def many_designs(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Design matrices for many nonlinear vectors at once, shape ``(n_draws, n_points, 2)``."""
+        _, g = _BoundedRationalPower._weight(law, nonlinear, log_x)
+        out = np.empty((nonlinear.shape[0], log_x.shape[0], 2), dtype=float)
+        out[:, :, 0] = 1.0 / (1.0 + g)
+        out[:, :, 1] = g / (1.0 + g)
+        return out
+
+    @staticmethod
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    ) -> np.ndarray:
+        """``d f / d g = (I - E) / (1 + g)**2``, chained through each term of ``g``."""
+        k = len(law.predictors)
+        terms, g = _BoundedRationalPower._weight(law, nonlinear, log_x)
+        slope = ((linear[1] - linear[0]) / (1.0 + g) ** 2)[:, None]
+        grad = np.empty((log_x.shape[0], 2 * k), dtype=float)
+        grad[:, :k] = slope * np.exp(-nonlinear[None, k:] * log_x)
+        grad[:, k:] = -slope * terms * log_x
+        return grad
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        """The limits are scale-free; each weight absorbs ``reference**alpha`` like an amplitude."""
+        values = _values(law, params)
+        k = len(law.predictors)
+        exponents = params[law.n_linear + k :]
+        for i, name in enumerate(law.param_names[law.n_linear : law.n_linear + k]):
+            values[name] *= float(reference[i] ** exponents[i])
+        return values
+
+
 _LAWS: dict[str, Any] = {
     law.name: law
     for law in (
@@ -824,6 +943,7 @@ _LAWS: dict[str, Any] = {
         _SeparableInteractionPower,
         _ShiftedSeparablePower,
         _KaplanJointPower,
+        _BoundedRationalPower,
     )
 }
 _DESIGNS = {name: law.design for name, law in _LAWS.items()}
@@ -850,6 +970,8 @@ def available_laws() -> dict[str, str]:
         shifted-separable-power: E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite
         small-scale limit)
         kaplan-joint-power: E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
+        bounded-rational-power: (E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small
+        scale, floor E at large)
     """
     return {name: law.description for name, law in _LAWS.items()}
 
@@ -887,7 +1009,8 @@ def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) 
         Traceback (most recent call last):
         ...
         simple_scaling_laws.laws.LawError: Unknown law 'no-such-law'; available: separable-power,
-        multiplicative-power, separable-interaction-power, shifted-separable-power, kaplan-joint-power
+        multiplicative-power, separable-interaction-power, shifted-separable-power, kaplan-joint-power,
+        bounded-rational-power
 
         Some laws are defined only for a particular set of predictors, and say so:
 

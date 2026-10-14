@@ -147,7 +147,7 @@ columns:
 
 ## What it fits
 
-Five law families. Each is linear in its offset and amplitudes, which are solved exactly, and
+Six law families. Each is linear in its offset and amplitudes, which are solved exactly, and
 nonlinear in a handful of other parameters -- exponents, and for the richer laws a shift or a ratio --
 which are searched:
 
@@ -165,6 +165,8 @@ shifted-separable-power
     E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite small-scale limit)
 kaplan-joint-power
     E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
+bounded-rational-power
+    (E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small scale, floor E at large)
 
 ```
 
@@ -355,6 +357,59 @@ column, and both must actually vary.
 Measured on 4x4 designs, the nominal 95% prediction intervals of both laws covered the truth
 88-100% of the time, inside the grid and a decade beyond it. On a 3x3 grid with two runs per
 configuration the Kaplan law's dropped to 78-85%, so prefer the larger grid.
+
+### When the experiment reaches down to chance
+
+Every law above grows without limit as scale shrinks. A real loss does not: a model trained on
+almost nothing sits at chance and stays there. `bounded-rational-power` has a plateau `I` at the
+small end as well as a floor `E` at the large one, and moves between them as a weighted average,
+`(E + I·g) / (1 + g)`, whose weight `g = A·N^-α + B·D^-β` is an ordinary separable sum of power
+terms. It is the M4 estimator of Alabdulmohsin, Neyshabur & Zhai (2022) with its shape exponent
+(the paper's α, in `(f - E) / (I - f)^α = g`) fixed at one -- the
+one case that can be written down in closed form, and so the one whose two limits the fitter can
+solve exactly rather than search for.
+
+```pycon
+>>> truth = {"E": 1.0, "I": 4.0, "A": 1.0, "B": 0.8, "alpha": 0.5, "beta": 0.4}
+>>> saturating = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     law="bounded-rational-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> bounded = fit(saturating, law="bounded-rational-power", n_draws=200, seed=0)
+>>> {k: round(v, 2) for k, v in bounded.params("test_loss__cross_entropy").items()}
+{'E': 1.03, 'I': 4.0, 'A': 1.01, 'B': 0.78, 'alpha': 0.49, 'beta': 0.41}
+
+```
+
+What it buys is a sane answer below the grid. Three decades under the smallest configuration the
+true loss is 3.99, just short of the plateau. The separable law, fit to the same runs, has nothing
+to stop it:
+
+```pycon
+>>> tiny = {"model_size__n_params": [1e3], "dataset_size__n_subjects": [1e0]}
+>>> for name, candidate in (("bounded", bounded), ("separable", fit(saturating, n_draws=200, seed=0))):
+...     row = candidate.predict(tiny).row(0, named=True)
+...     print(
+...         f"{name:<10} {row['test_loss__cross_entropy__median']:5.2f} "
+...         f"[{row['test_loss__cross_entropy__q025']:.2f}, {row['test_loss__cross_entropy__q975']:.2f}]"
+...     )
+bounded     3.99 [3.96, 4.01]
+separable   8.14 [5.06, 144.22]
+
+```
+
+The plateau is only identified if the experiment reaches far enough down to see the curve bend
+toward it. On data that are still a clean power law `I` runs off to its bound while the weights
+shrink to compensate, and the fit is reported as `ill_conditioned_fit`: use `separable-power`. Both
+limits are estimated, never assumed; for a metric confined to `[0, 1]` they are limits on the logit
+scale the metric is fit on. Its intervals covered the truth 82-98% of the time on 4x4 designs and
+75-82% on a 3x3 grid with two runs per configuration, so this law too wants the larger grid.
 
 ## Bounded metrics
 

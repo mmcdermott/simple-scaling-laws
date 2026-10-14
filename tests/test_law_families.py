@@ -69,6 +69,13 @@ CASES = {
         contains_separable=True,
     ),
     "kaplan-joint-power": Case({"E": 1.0, "A": 2.0, "rho": 0.5, "beta": 0.6, "R": 1.0}, levels=4),
+    # Contains the separable law only as a limit -- an ever-higher plateau with ever-smaller weights
+    # -- which is exactly what a fit to separable data runs toward.
+    "bounded-rational-power": Case(
+        {"E": 1.0, "I": 4.0, "A": 1.0, "B": 0.8, "alpha": 0.5, "beta": 0.4},
+        levels=4,
+        contains_separable=True,
+    ),
 }
 NESTING = sorted(name for name, case in CASES.items() if case.contains_separable)
 
