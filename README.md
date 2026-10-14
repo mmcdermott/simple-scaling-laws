@@ -146,7 +146,7 @@ columns:
 
 ## What it fits
 
-Eight law families. Each is linear in its offset and amplitudes, which are solved exactly, and
+Seven law families. Each is linear in its offset and amplitudes, which are solved exactly, and
 nonlinear in a handful of other parameters -- exponents, and for the richer laws a shift, a ratio or
 a break -- which are searched:
 
@@ -158,8 +158,6 @@ separable-power
     E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)
 multiplicative-power
     E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
-separable-interaction-power
-    E + sum_i A_i * x_i**-alpha_i - C * prod_i x_i**-gamma_i (separable terms minus a joint term)
 shifted-separable-power
     E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite small-scale limit)
 kaplan-joint-power
@@ -190,57 +188,13 @@ True
 
 ```
 
-### When model size and data interact
+### The examples below
 
-`separable-power` makes the effect of model size the same at every dataset size. That is the
-assumption most likely to fail in a small-data experiment, where a larger model can be *worse* when
-data are scarce and better when they are not. `separable-interaction-power` adds one joint term to
-allow it:
-
-`E + A·N^-α + B·D^-β − C·N^-γ·D^-δ`
-
-The joint term is subtracted, and fades as either scale grows, so it bends the surface most where
-both are small. It is a package-level extension motivated by the model/data coupling in Kaplan et
-al. (2020), not a law named there.
+The richer laws are shown on a 4x4 grid, and some are compared against data that follow the plain
+separable law exactly:
 
 ```pycon
->>> truth = {"E": 1.0, "A": 2.0, "B": 3.0, "C": 1.5, "alpha": 0.3, "beta": 0.3, "gamma": 0.15, "delta": 0.3}
 >>> grid = {"model_sizes": (1e6, 1e7, 1e8, 1e9), "dataset_sizes": (1e3, 1e4, 1e5, 1e6)}
->>> coupled = simulate_runs(
-...     {"test_loss__cross_entropy": truth},
-...     law="separable-interaction-power",
-...     runs_per_config=2,
-...     evaluations_per_run=4,
-...     run_sd=0.01,
-...     eval_sd=0.02,
-...     seed=0,
-...     **grid,
-... )
->>> interaction = fit(coupled, law="separable-interaction-power", n_draws=200, seed=0)
->>> sweep = interaction.predict(
-...     {
-...         "model_size__n_params": [1e6, 1e7, 1e8, 1e9] * 2,
-...         "dataset_size__n_subjects": [1e3] * 4 + [1e6] * 4,
-...     }
-... )
->>> losses = [round(v, 2) for v in sweep["test_loss__cross_entropy__median"]]
->>> losses[:4]  # scarce data: the loss turns back up as the model grows
-[8.0, 7.25, 7.32, 7.66]
->>> losses[4:]  # ample data: bigger is simply better
-[6.8, 4.26, 3.04, 2.46]
-
-```
-
-It costs three more parameters than the separable law -- eight for one model-size and one
-dataset-size column -- so it wants at least a 4x4 grid; on the 3x3 grid that suits the separable law
-it is reported as `too_few_configurations`. Measured on 4x4 designs, its nominal 95% prediction
-intervals covered the truth 92-98% of the time, inside the grid and a decade beyond it.
-
-When the data contain no interaction, the joint term has nothing of its own to fit and can only
-imitate the separable terms. The curve is still right, but the individual parameters -- the
-asymptote `E` included -- are an accident of the optimizer, and the fit says so:
-
-```pycon
 >>> separable = simulate_runs(
 ...     {"test_loss__cross_entropy": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}},
 ...     runs_per_config=2,
@@ -250,15 +204,16 @@ asymptote `E` included -- are an accident of the optimizer, and the fit says so:
 ...     seed=0,
 ...     **grid,
 ... )
->>> overfit = fit(separable, law="separable-interaction-power", n_draws=200, seed=0)
->>> note = next(note for note in overfit.warnings if note.code == "ill_conditioned_fit")
->>> note.details["parameters"]
-['E', 'C']
 
 ```
 
-Treat that note as the instruction to drop back to `separable-power`, which this law contains
-exactly at `C = 0`.
+There is deliberately no law here in which a larger model does *worse* when data are scarce. The
+obvious form -- the separable law minus a joint term `C·N^-γ·D^-δ` -- was tried and removed. Any
+`C` large enough to couple the two resources also makes the loss rise with model size somewhere:
+always at small enough data, and at every data size when `γ < α`. So where the curve turns up is
+set by the formula, not by the data. Videau et al. (2026) reject the form on the same grounds. The
+two joint laws below couple model size and data while staying monotone in both. For a curve that
+genuinely turns, use `broken-power` along one axis.
 
 ### When the small end is not yet a power law
 
@@ -355,8 +310,7 @@ power law in model size (exponent `ρ·β`), with an ample model it is a power l
 
 ```
 
-It is monotone in both resources, so it describes saturation, not a larger model being *worse*; for
-that, use the interaction law above. It is defined for exactly one model-size and one dataset-size
+It is monotone in both resources, so it describes saturation, not a larger model being *worse*. It is defined for exactly one model-size and one dataset-size
 column, and both must actually vary.
 
 Measured on 4x4 designs, the Kaplan law's nominal 95% prediction intervals covered the truth
@@ -462,6 +416,17 @@ limits are estimated, never assumed; for a metric confined to `[0, 1]` they are 
 scale the metric is fit on. Its intervals covered the truth 82-98% of the time on 4x4 designs and
 97-98% on a 3x3 grid with two runs per configuration -- there only because the bootstrap puts back
 noise the fit absorbed (75-82% without it), so this law too wants the larger grid.
+
+On the plain separable data above, the note names the parameters that trade off against each other
+with almost no change in the fitted curve -- read it as the instruction to drop back to
+`separable-power`:
+
+```pycon
+>>> unbent = fit(separable, law="bounded-rational-power", n_draws=200, seed=0)
+>>> next(note for note in unbent.warnings if note.code == "ill_conditioned_fit").details["parameters"]
+['I', 'A', 'B']
+
+```
 
 ### When the slope changes partway
 

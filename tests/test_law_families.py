@@ -77,11 +77,6 @@ class Case:
 
 
 CASES = {
-    "separable-interaction-power": Case(
-        {"E": 1.0, "A": 2.0, "B": 3.0, "C": 1.5, "alpha": 0.3, "beta": 0.3, "gamma": 0.15, "delta": 0.3},
-        levels=4,
-        contains_separable=True,
-    ),
     "shifted-separable-power": Case(
         {"E": 1.0, "A": 2.0, "B": 1.5, "alpha": 0.5, "beta": 0.4, "s_n_params": 0.3, "s_n_subjects": 0.2},
         levels=4,
@@ -286,7 +281,6 @@ def test_a_law_that_cannot_be_built_says_which_predictor_the_data_removed():
 SINGLE_PREDICTOR_TRUTHS = {
     "separable-power": {"E": 1.0, "A": 2.0, "alpha": 0.3},
     "multiplicative-power": {"E": 1.0, "A": 2.0, "alpha": 0.3},
-    "separable-interaction-power": {"E": 1.0, "A": 2.0, "C": 1.5, "alpha": 0.5, "gamma": 0.2},
     "shifted-separable-power": {"E": 1.0, "A": 2.0, "alpha": 0.5, "s": 0.3},
     "bounded-rational-power": {"E": 1.0, "I": 4.0, "A": 1.0, "alpha": 0.5},
     "broken-power": CASES["broken-power"].truth,

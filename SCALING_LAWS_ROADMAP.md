@@ -4,12 +4,12 @@ This document describes proposed extensions to `simple-scaling-laws` for model/d
 
 ## Status
 
-Sections 1-5 below are implemented, plus one joint law the roadmap did not propose (Skaling), and the
-README documents each law. What follows is kept as the design record; where the implementation went a different way, this is how:
+Sections 2-5 below are implemented; section 1 was implemented and then removed; and one joint law the
+roadmap did not propose (Skaling) was added. The README documents each law. What follows is kept as the design record; where the implementation went a different way, this is how:
 
 | Proposal                             | Outcome                                                                             |
 | ------------------------------------ | ----------------------------------------------------------------------------------- |
-| 1. Interaction law                   | `separable-interaction-power`, any number of predictors                             |
+| 1. Interaction law                   | Implemented, then removed; superseded by `skaling-joint-power` (see below)          |
 | 2. Kaplan-style joint scaling        | `kaplan-joint-power`, with `rho = alpha_N / alpha_D`                                |
 | 3. Shifted power (Zhai et al.)       | `shifted-separable-power`; needs four levels per predictor                          |
 | 4. M4 / bounded small-data scaling   | `bounded-rational-power`, shape exponent fixed at 1 only                            |
@@ -38,6 +38,13 @@ When this roadmap was written the package supported:
 The fitter is intentionally optimized around **variable projection**: conditional on nonlinear exponents, offsets and amplitudes are solved by bounded linear least squares. New law families should preserve this structure whenever practical.
 
 ## 1. Model/data interaction law
+
+> **Removed.** This law was implemented as `separable-interaction-power` and then taken out before the
+> first release. Any `C > 0` that produces the coupling also makes the loss rise with model size
+> somewhere -- always at small enough `D`, and at every `D` when `gamma < alpha` -- so where larger
+> models get worse is fixed by the formula rather than learned from the data. Videau et al. (2026)
+> reject a subtracted product term on the same grounds. `skaling-joint-power` gives a model/data
+> coupling that stays monotone; a genuine turnover along one axis is `broken-power`.
 
 Recommended first addition:
 

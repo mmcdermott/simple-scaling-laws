@@ -3,8 +3,10 @@
 import numpy as np
 import pytest
 
+from simple_scaling_laws import fit
 from simple_scaling_laws.laws import build_law
 from simple_scaling_laws.model import raw_scale_params
+from simple_scaling_laws.simulate import simulate_runs
 
 
 def test_bounded_rational_approaches_both_limits():
@@ -64,3 +66,24 @@ def test_bounded_rational_jacobian_matches_finite_difference():
         down[j] -= step
         numerical[:, j] = (law.evaluate(up, log_x) - law.evaluate(down, log_x)) / (2 * step)
     assert np.allclose(analytic, numerical, atol=1e-6, rtol=1e-5)
+
+
+def test_on_data_that_never_bend_the_unidentified_plateau_is_reported_as_ill_conditioned():
+    """The positive case for ``ill_conditioned_fit``: ``I`` and the weights trade off along a flat valley."""
+    truth = {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}
+    for seed in range(3):
+        frame = simulate_runs(
+            {"test_loss__ce": truth},
+            model_sizes=(1e6, 1e7, 1e8, 1e9),
+            dataset_sizes=(1e3, 1e4, 1e5, 1e6),
+            runs_per_config=2,
+            evaluations_per_run=4,
+            run_sd=0.01,
+            eval_sd=0.02,
+            seed=seed,
+        )
+        model = fit(frame, law="bounded-rational-power", n_draws=40, seed=seed)
+        flagged = [note for note in model.warnings if note.code == "ill_conditioned_fit"]
+        assert flagged, seed
+        assert "I" in flagged[0].details["parameters"], seed
+        assert flagged[0].details["condition_number"] is None or flagged[0].details["condition_number"] > 1e3
