@@ -1,7 +1,4 @@
-"""Focused tests for the Skaling joint law of Videau et al.
-
-(2026).
-"""
+"""Focused tests for the Skaling joint law (Videau, Youbi-Idrissi, Lopez-Paz & Ahuja, 2026)."""
 
 import warnings
 

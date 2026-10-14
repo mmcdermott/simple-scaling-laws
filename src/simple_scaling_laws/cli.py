@@ -18,6 +18,9 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import polars as pl
+import yaml
+
 from .api import fit as fit_model
 from .artifact import package_version
 from .compare import compare as compare_models
@@ -27,8 +30,6 @@ from .uncertainty import DEFAULT_DRAWS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
-
-    import polars as pl
 
 
 class CLIError(ValueError):
@@ -171,8 +172,14 @@ def build_parser() -> argparse.ArgumentParser:
     Examples:
         >>> parser = build_parser()
         >>> args = parser.parse_args(["fit", "runs.parquet", "--output", "out.slaw"])
-        >>> args.command, args.law, args.output
-        ('fit', 'separable-power', 'out.slaw')
+        >>> args.command, args.output
+        ('fit', 'out.slaw')
+
+        Options left out stay unset, so a configuration file can supply them; ``fit`` falls back to
+        the documented defaults only after that:
+
+        >>> args.law is None and args.draws is None and args.seed is None
+        True
     """
     parser = argparse.ArgumentParser(
         prog="scaling-laws",
@@ -185,7 +192,6 @@ def build_parser() -> argparse.ArgumentParser:
     fit_parser.add_argument("input", help="Evaluation records as .parquet or .csv.")
     fit_parser.add_argument(
         "--law",
-        default=DEFAULT_LAW,
         choices=sorted(available_laws()),
         help=f"Scaling-law family (default: {DEFAULT_LAW}).",
     )
@@ -199,9 +205,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fit_parser.add_argument("--primary-target", help="Target used as the reference for correlations.")
     fit_parser.add_argument(
-        "--draws", type=int, default=DEFAULT_DRAWS, help="Bootstrap draws per target (advanced)."
+        "--draws", type=int, help=f"Bootstrap draws per target (advanced; default: {DEFAULT_DRAWS})."
     )
-    fit_parser.add_argument("--seed", type=int, default=0, help="Random seed (advanced).")
+    fit_parser.add_argument("--seed", type=int, help="Random seed (advanced; default: 0).")
     fit_parser.add_argument("--quiet", action="store_true", help="Do not print the fit summary.")
 
     predict_parser = subparsers.add_parser("predict", help="Predict at new scales from a fitted artifact.")
@@ -347,7 +353,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     try:
         return handlers[args.command](args)
-    except (CLIError, ValueError, KeyError, FileNotFoundError) as exc:
+    except (CLIError, ValueError, KeyError, OSError, pl.exceptions.PolarsError, yaml.YAMLError) as exc:
+        # Every one of these is a problem with the user's input -- a malformed table, config or
+        # argument -- and deserves a one-line message rather than a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

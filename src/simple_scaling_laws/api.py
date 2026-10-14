@@ -8,7 +8,6 @@ normally makes.
 
 from __future__ import annotations
 
-import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,7 +33,7 @@ from .fitting import (
 from .laws import DEFAULT_LAW, LawError, LawInstance, build_law
 from .model import ScalingLawModel, TargetFit
 from .notes import Note
-from .uncertainty import DEFAULT_DRAWS, Uncertainty, bootstrap
+from .uncertainty import DEFAULT_DRAWS, Uncertainty, bootstrap, target_seed
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterable, Mapping
@@ -80,30 +79,6 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if unknown:
         raise ConfigError(f"Unknown configuration key(s) {sorted(unknown)}; allowed: {sorted(CONFIG_KEYS)}")
     return data
-
-
-def target_seed(seed: int, target: str) -> int:
-    """The random seed used for one target's bootstrap.
-
-    Derived from the target's *name* rather than its position, so that the same target draws the
-    same cluster multipliers in two different experiments even when those experiments report
-    different sets of metrics. That is what lets :func:`simple_scaling_laws.compare` difference two
-    fits' draws and get the variance of the difference right rather than the sum of two variances.
-
-    Args:
-        seed: The experiment-level seed.
-        target: The target column name.
-
-    Returns:
-        A seed in ``[0, 2**32)``.
-
-    Examples:
-        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_loss__ce")
-        True
-        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_metric__auroc")
-        False
-    """
-    return (seed + zlib.crc32(target.encode())) % (2**32)
 
 
 def _variance_components(
@@ -192,6 +167,8 @@ def _fit_target(
         n_draws=n_draws,
         seed=seed,
         target=target,
+        run_sd_from_replicates=components.source == "replicates",
+        n_design_configurations=dataset.n_configurations,
     )
     goodness = diagnostics_mod.goodness_of_fit(y, law.evaluate(fit.params, log_x), weights, law.n_params)
     target_fit = TargetFit(
@@ -389,19 +366,20 @@ def _manifest(
 
 def fit(
     source: Any,
-    law: str = DEFAULT_LAW,
+    law: str | None = None,
     columns: Mapping[str, str | Iterable[str]] | None = None,
     primary_target: str | None = None,
     targets: Mapping[str, Any] | None = None,
     config: str | Path | Mapping[str, Any] | None = None,
-    n_draws: int = DEFAULT_DRAWS,
-    seed: int = 0,
+    n_draws: int | None = None,
+    seed: int | None = None,
 ) -> ScalingLawModel:
     """Fit a scaling law to every recognized target in an experiment table.
 
     Args:
         source: A parquet/CSV path or an in-memory dataframe of evaluation rows.
-        law: The scaling-law family, see :func:`simple_scaling_laws.laws.available_laws`.
+        law: The scaling-law family, see :func:`simple_scaling_laws.laws.available_laws`. Defaults
+            to ``separable-power``.
         columns: Optional column-role overrides, e.g. ``{"training_run_id": "run"}``.
         primary_target: Optional explicit primary target; defaults to the single test loss.
         targets: Optional explicit per-target descriptions, e.g.
@@ -409,9 +387,10 @@ def fit(
             confined to ``[0, 1]`` is fit on its logit so its asymptote cannot leave that range;
             well-known metric names are recognized without being named here.
         config: Optional YAML path or mapping supplying any of the above. It fills in only the
-            arguments left at their default value, so anything passed explicitly wins.
-        n_draws: Number of bootstrap draws to retain per target.
-        seed: Seed for every random draw, so a fit is exactly reproducible.
+            arguments that were not passed, so anything passed explicitly wins -- including a value
+            equal to the default.
+        n_draws: Number of bootstrap draws to retain per target. Defaults to 1000.
+        seed: Seed for every random draw, so a fit is exactly reproducible. Defaults to 0.
 
     Returns:
         The fitted :class:`~simple_scaling_laws.model.ScalingLawModel`.
@@ -454,12 +433,14 @@ def fit(
         True
     """
     settings = dict(load_config(config) if isinstance(config, str | Path) else (config or {}))
-    law = settings.get("law", law) if law == DEFAULT_LAW else law
+    law = law if law is not None else settings.get("law", DEFAULT_LAW)
     columns = columns if columns is not None else settings.get("columns")
     primary_target = primary_target if primary_target is not None else settings.get("primary_target")
     targets = targets if targets is not None else settings.get("targets")
-    n_draws = int(settings.get("n_draws", n_draws)) if n_draws == DEFAULT_DRAWS else int(n_draws)
-    seed = int(settings.get("seed", seed)) if seed == 0 else int(seed)
+    n_draws = int(n_draws if n_draws is not None else settings.get("n_draws", DEFAULT_DRAWS))
+    seed = int(seed if seed is not None else settings.get("seed", 0))
+    if n_draws < 1:
+        raise ValueError(f"n_draws must be at least 1, got {n_draws}")
 
     dataset = build_dataset(source, columns=columns, primary_target=primary_target, targets=targets)
     notes: list[Note] = list(dataset.notes)

@@ -5,9 +5,12 @@ over raw evaluation rows instead counts each trained model once per bootstrap re
 set noise masquerade as a relationship between the metrics.
 """
 
+import numpy as np
 import polars as pl
+import pytest
 
 from simple_scaling_laws import fit
+from simple_scaling_laws.simulate import simulate_runs
 
 LOSS_PARAMS = {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}
 
@@ -112,3 +115,23 @@ def test_constant_metric_yields_undefined_correlation():
     assert correlations["pearson"] is None
     assert correlations["pearson_ci"] is None
     assert model.metric_correlations()["pearson"][0] is None
+
+
+def test_the_evaluation_row_correlation_is_on_the_fitting_scale():
+    """A ``[0, 1]`` metric is correlated on its logit at both levels, so they differ only in aggregation."""
+    frame = simulate_runs(
+        {
+            "test_loss__ce": LOSS_PARAMS,
+            "test_metric__auroc": {"E": 0.9, "A": -0.2, "alpha": 0.4, "B": -0.1, "beta": 0.3},
+        },
+        run_sd=0.01,
+        eval_sd=0.02,
+        seed=0,
+    )
+    model = fit(frame, n_draws=50, seed=0)
+    reported = model.diagnostics["metric_correlations"]["test_metric__auroc"]["evaluation_row_pearson"]
+    auroc = frame["test_metric__auroc"].to_numpy()
+    on_logit = np.corrcoef(frame["test_loss__ce"].to_numpy(), np.log(auroc / (1 - auroc)))[0, 1]
+    on_raw = np.corrcoef(frame["test_loss__ce"].to_numpy(), auroc)[0, 1]
+    assert reported == pytest.approx(on_logit, abs=1e-9)
+    assert abs(on_logit - on_raw) > 1e-4, "the test needs the two scales to differ"

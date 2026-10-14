@@ -3,8 +3,9 @@
 Everything here is advisory: the package returns a fit whenever one is mathematically possible and records its
 objections rather than raising them, so an automated caller can decide how much to trust a prediction.
 Correlations between the primary loss and the other metrics are always computed on **run-level means**;
-computing them over raw evaluation rows would count the same trained model dozens of times and inflate both
-the estimate and its apparent precision.
+computing them over raw evaluation rows would count the same trained model dozens of times, overstating how
+precisely the correlation is known, and would let test-set noise shared across models pass for a relationship
+between the metrics.
 """
 
 from __future__ import annotations
@@ -16,7 +17,9 @@ import numpy as np
 from scipy import stats
 
 from .laws import EXPONENT_KINDS
+from .metrics import to_fitting_scale
 from .notes import Note
+from .uncertainty import target_seed
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
@@ -172,10 +175,9 @@ def design_notes(dataset: Dataset, law: LawInstance) -> list[Note]:
                 )
             )
 
-    for role, columns in (
-        ("model_size", dataset.schema.model_size),
-        ("dataset_size", dataset.schema.dataset_size),
-    ):
+    # Only predictors the law actually uses: one the fit dropped for being held fixed already has its
+    # own note (``constant_predictor_dropped``), and has no exponent to speak of.
+    for role, columns in (("model_size", law.model_size), ("dataset_size", law.dataset_size)):
         for column in columns:
             j = dataset.schema.predictors.index(column)
             if np.unique(dataset.config_values[:, j]).size < 2:
@@ -473,15 +475,18 @@ def metric_correlations(dataset: Dataset, seed: int = 0, n_draws: int = CORRELAT
 
     Correlations are computed across **training runs**, using each run's mean, so a model evaluated
     on a hundred bootstrap resamples counts once. The correlation over raw evaluation rows is
-    reported alongside purely so the inflation is visible; it is not a valid estimate of how the
-    metrics co-vary across trained models.
+    reported alongside, with its row count, purely so the inflated sample size is visible. Its
+    estimate may land close to the run-level one, but it claims many times the evidence, and test-set
+    noise shared across models can make it look related when the models are not. It is not a valid
+    estimate of how the metrics co-vary across trained models.
 
     Confidence intervals come from resampling scaling configurations with replacement, which
     respects the fact that runs at the same scale are not independent draws.
 
     A target confined to ``[0, 1]`` contributes its logit, since that is the scale it was fit and
-    aggregated on. Spearman is unaffected by that -- it is rank-based -- and Pearson is generally a
-    little larger, because the relationship is closer to linear there.
+    aggregated on -- in the evaluation-row correlation too, so the two differ only in aggregation.
+    Spearman is unaffected by that, being rank-based, and Pearson is generally a little larger,
+    because the relationship is closer to linear there.
 
     Args:
         dataset: The prepared dataset.
@@ -491,18 +496,21 @@ def metric_correlations(dataset: Dataset, seed: int = 0, n_draws: int = CORRELAT
     Returns:
         A mapping from target name to its correlation diagnostics.
     """
-    rng = np.random.default_rng(seed)
     primary_name = dataset.schema.primary_target
     primary = dataset.observations[primary_name]
     out: dict[str, Any] = {}
     for name, other in dataset.observations.items():
         if name == primary_name:
             continue
+        rng = np.random.default_rng(target_seed(seed, name))
         a, b, configs = _aligned_run_means(primary, other)
         pearson, spearman = _safe_correlation(a, b)
         rows = dataset.frame.select(primary_name, name).drop_nulls()
         row_pearson, row_spearman = _safe_correlation(
-            rows[primary_name].to_numpy().astype(float), rows[name].to_numpy().astype(float)
+            *(
+                to_fitting_scale(rows[column].to_numpy().astype(float), dataset.schema.target(column).kind)
+                for column in (primary_name, name)
+            )
         )
         interval: list[float] | None = None
         if pearson is not None:

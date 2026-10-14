@@ -20,6 +20,7 @@ from simple_scaling_laws.artifact import (
     ArtifactError,
     read_artifact,
 )
+from simple_scaling_laws.model import PredictionError
 
 POINTS = pl.DataFrame(
     {
@@ -187,3 +188,22 @@ def test_saving_into_an_empty_directory_is_allowed(tmp_path, saved):
     empty = tmp_path / "fresh.slaw"
     empty.mkdir()
     assert model.save(empty).is_dir()
+
+
+def test_new_run_predictions_for_a_target_do_not_depend_on_which_others_are_requested(saved):
+    """Seeds come from the target's name, not its position, so asking for fewer targets changes nothing."""
+    model, _ = saved
+    points = POINTS
+    everything = model.predict(points, kind="new-run", seed=3)
+    for target in model.targets:
+        alone = model.predict(points, kind="new-run", seed=3, targets=[target])
+        for column in alone.columns:
+            if column.startswith(target):
+                assert alone[column].to_list() == everything[column].to_list(), column
+
+
+def test_quantiles_that_would_share_a_column_are_refused(saved):
+    """Two quantiles equal to three decimals used to overwrite one another without a word."""
+    model, _ = saved
+    with pytest.raises(PredictionError, match="share the column suffix 'q025'"):
+        model.predict(POINTS, quantiles=[0.025, 0.0251])

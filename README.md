@@ -7,8 +7,7 @@
 [![Code Quality](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/code-quality-main.yaml/badge.svg)](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/code-quality-main.yaml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/mmcdermott/simple-scaling-laws#license)
 
-> [!WARNING]
-> **Internal research tooling, largely AI-generated.** This package was written primarily by an AI
+> **Warning: internal research tooling, largely AI-generated.** This package was written primarily by an AI
 > coding agent to support internal experiments in the McDermott Health AI Lab. It is public so it can
 > be installed and cited easily, not because it is a hardened, externally supported library. Read the
 > statistics section before you trust a number from it, check the warnings it emits, and treat its
@@ -176,8 +175,8 @@ broken-power
 
 With one model-size and one dataset-size column, `separable-power` is the conventional
 `E + A·N^-α + B·D^-β`. Start there. The other families each relax one specific assumption it makes,
-at the price of more parameters and a larger grid, and each has a section below saying when it is
-worth that price. A lower in-sample residual is not by itself a reason to prefer one: every richer
+at the price of more parameters and a larger grid, and each except `multiplicative-power` (a single
+joint power term, `E + A·N^-α·D^-β`) has a section below saying when it is worth that price. A lower in-sample residual is not by itself a reason to prefer one: every richer
 law here can fit separable data at least as well as the separable law does.
 
 Losses are fit with non-negative amplitudes, which gives the usual "irreducible floor plus decaying
@@ -316,7 +315,9 @@ shifted    1.10 [1.05, 1.15]
 every predictor rather than three -- with three there are two contrasts from which to learn an
 amplitude, an exponent and a shift -- and says so with an `error`-severity
 `too_few_predictor_levels` note if it does not get them. On data that are already a clean power law
-the shifts sit at zero and are reported as `parameter_at_bound`.
+the shifts sit at zero and are reported as `parameter_at_bound`. Measured on 4x4 and 5x5 designs, its
+nominal 95% prediction intervals covered the truth 88-98% of the time, inside the grid and a decade
+beyond it.
 
 ### When one resource is the bottleneck
 
@@ -358,8 +359,8 @@ It is monotone in both resources, so it describes saturation, not a larger model
 that, use the interaction law above. It is defined for exactly one model-size and one dataset-size
 column, and both must actually vary.
 
-Measured on 4x4 designs, the nominal 95% prediction intervals of both laws covered the truth
-88-100% of the time, inside the grid and a decade beyond it. On a 3x3 grid with two runs per
+Measured on 4x4 designs, the Kaplan law's nominal 95% prediction intervals covered the truth
+92-100% of the time, inside the grid and a decade beyond it. On a 3x3 grid with two runs per
 configuration the Kaplan law's covered 93-95%, but only because the bootstrap puts back noise that
 a fit this close to saturated absorbs (78-85% without it); prefer the larger grid.
 
@@ -700,14 +701,16 @@ the interval endpoints -- and take measured coverage to **91-95%** across the de
 targets. A third correction matters when a law has nearly as many parameters as configurations: the
 fit then passes almost exactly through some of them, their residuals understate the noise, and each
 configuration's pseudo-residual is floored at the share of its (separately estimated) noise that the
-fit absorbed. It only ever widens an interval. `tests/test_coverage.py` re-measures this on every CI run, so it cannot silently regress.
+fit absorbed. It never shrinks a configuration's pseudo-residual, so it pushes intervals wider, not
+narrower. `tests/test_coverage.py` re-measures this on every CI run, so it cannot silently regress.
 
 That calibration was measured on `separable-power`. Every other law is held to the same test
 (`tests/test_law_families.py`), and its section above reports what it measured.
 
 **Correlations are computed across runs.** Loss/metric correlations use run-level means, with
-intervals from resampling configurations. The naive evaluation-row correlation is reported alongside
-purely so its inflation is visible:
+intervals from resampling configurations. The naive evaluation-row correlation is reported alongside,
+with its row count, purely so the inflated sample size is visible -- its estimate can land close to the
+run-level one while claiming five times the evidence:
 
 ```pycon
 >>> correlations = model.metric_correlations()
@@ -717,7 +720,7 @@ purely so its inflation is visible:
 ...         f"(evaluation-row r={row['evaluation_row_pearson']:.3f} over "
 ...         f"{row['n_evaluation_rows']} rows)"
 ...     )
-test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.970 over 90 rows)
+test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.971 over 90 rows)
 
 ```
 
@@ -729,7 +732,8 @@ test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.970 ove
 | `new-run` | what might *one* newly trained model achieve at this scale           |
 
 `mean` is the default because it is the scaling law itself. `new-run` adds training-run
-stochasticity, resampled from the observed run-to-run deviations rather than assumed Gaussian:
+stochasticity, resampled from the observed run-to-run deviations rather than assumed Gaussian
+when there are at least ten of them (otherwise drawn as Gaussian with the estimated run SD):
 
 ```pycon
 >>> def width(frame, target="test_loss__cross_entropy"):
@@ -824,7 +828,7 @@ Detected conditions include: too few distinct configurations, fewer configuratio
 **a predictor measured at fewer than three distinct scales**, a predictor held fixed, collinear
 predictors, a single run per configuration, no repeated evaluations, optimizer non-convergence,
 parameters pinned to a bound, weakly identified exponents, parameters that trade off against each
-other without changing the curve, a law whose intervals are known to be too narrow, lack of fit, a constant target, no
+other without changing the curve, lack of fit, a constant target, no
 uncertainty information at all, and extrapolation at predict time.
 
 The three-scales rule deserves its own note, because it is the one failure widening cannot rescue.
@@ -857,7 +861,7 @@ draw can be built from `model.predict()`.
 
 ## Development
 
-See [CONTRIBUTORS.md](CONTRIBUTORS.md). In short:
+See [CONTRIBUTORS.md](https://github.com/mmcdermott/simple-scaling-laws/blob/main/CONTRIBUTORS.md). In short:
 
 ```bash
 uv sync
@@ -867,4 +871,4 @@ uv run pytest -v
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/mmcdermott/simple-scaling-laws/blob/main/LICENSE).

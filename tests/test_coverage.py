@@ -159,3 +159,29 @@ def test_a_configuration_the_fit_absorbs_still_carries_its_noise():
     assert np.all(np.abs(floored) >= floor - 1e-12)
     assert np.all(np.abs(floored) >= np.abs(unfloored) - 1e-12), "the floor may only widen"
     assert np.any(np.abs(unfloored) < floor), "this design should have a configuration below its floor"
+
+
+def test_the_noise_floor_acts_on_configuration_means_and_keeps_within_run_deviations():
+    """With several runs per configuration and unequal weights, the floor holds where the refit looks."""
+    law = build_law("broken-power", ("model_size__n",), ())
+    truth = np.array([1.0, 2.0, 0.15, 0.5, 1.0, 1.0])
+    configs = np.repeat(np.arange(8), 3)
+    log_x = np.linspace(-6.0, 6.0, 8)[configs][:, None]
+    rng = np.random.default_rng(1)
+    y = law.evaluate(truth, log_x) + rng.normal(0.0, 0.02, configs.size)
+    weights = rng.uniform(0.5, 1.5, configs.size)
+    fitted = fit_curve(law, log_x, y, weights, parameter_bounds(law, y, False, log_x)).params
+    noise_var = np.full(configs.size, 0.02**2)
+
+    floored = corrected_residuals(law, fitted, log_x, y, weights, configs, noise_var)
+    unfloored = corrected_residuals(law, fitted, log_x, y, weights, configs, np.zeros(configs.size))
+
+    def means(values):
+        return np.bincount(configs, weights * values) / np.bincount(configs, weights)
+
+    cluster_leverage = np.bincount(configs, leverage(law, fitted, log_x, weights))
+    mean_var = np.bincount(configs, weights**2 * noise_var) / np.bincount(configs, weights) ** 2
+    floor = np.sqrt(np.minimum(cluster_leverage, 1.0) * mean_var) * tail_correction(8)
+    assert np.all(np.abs(means(floored)) >= floor - 1e-12)
+    assert np.all(np.abs(means(floored)) >= np.abs(means(unfloored)) - 1e-12)
+    assert floored - means(floored)[configs] == pytest.approx(unfloored - means(unfloored)[configs])

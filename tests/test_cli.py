@@ -299,3 +299,27 @@ def test_compare_needs_at_least_two_models(workspace, capsys):
     code = main(["compare", str(workspace / "points.parquet"), "--model", f"only={workspace / 'one.slaw'}"])
     assert code == 1
     assert "at least two" in capsys.readouterr().err
+
+
+def test_an_explicit_option_beats_the_configuration_even_at_its_default_value(workspace):
+    """``--law separable-power`` is a choice, not an absence of one, and must not be overridden."""
+    config = workspace / "config.yaml"
+    config.write_text("law: multiplicative-power\nseed: 7\n")
+    output = workspace / "explicit.slaw"
+    arguments = ["fit", str(workspace / "runs.parquet"), "--config", str(config), "--output", str(output)]
+    assert main([*arguments, "--law", "separable-power", "--seed", "0", "--draws", "50", "--quiet"]) == 0
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["law"]["law"] == "separable-power"
+    assert manifest["seed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [(["--draws", "0"], "n_draws must be at least 1"), (["--config", "BAD"], "error:")],
+)
+def test_malformed_input_is_a_one_line_error_not_a_traceback(workspace, capsys, extra, message):
+    (workspace / "bad.yaml").write_text("law: [unclosed\n")
+    extra = [str(workspace / "bad.yaml") if part == "BAD" else part for part in extra]
+    code = main(["fit", str(workspace / "runs.parquet"), "--output", str(workspace / "x.slaw"), *extra])
+    assert code == 1
+    assert message in capsys.readouterr().err

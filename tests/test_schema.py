@@ -240,3 +240,78 @@ def test_pandas_input_is_accepted(loss_frame):
     pandas = pytest.importorskip("pandas")
     model = fit(pandas.DataFrame(loss_frame.to_dict(as_series=False)), n_draws=50, seed=0)
     assert model.manifest["n_training_runs"] == 18
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"test_set_id": "training_run_id"},
+        {"dataset_size": "training_run_id"},
+        {"model_size": "model_size__n_params", "dataset_size": "model_size__n_params"},
+        {"model_size": ["model_size__n_params", "model_size__n_params"]},
+    ],
+)
+def test_a_column_can_fill_only_one_role(overrides):
+    """A column named for two roles used to crash later inside polars with an unrelated message."""
+    with pytest.raises(SchemaError, match="more than one role"):
+        discover_schema(CONVENTIONAL, overrides)
+
+
+def _two_runs(**extra):
+    rows = {
+        "training_run_id": ["r1", "r1", "r2", "r2", "r3", "r3"],
+        "model_size__n": [1e6, 1e6, 1e7, 1e7, 1e8, 1e8],
+        "dataset_size__d": [1e4] * 6,
+        "test_loss__ce": [2.0, 2.2, 1.6, 1.8, 1.4, 1.5],
+    }
+    rows.update(extra)
+    return pl.DataFrame(rows)
+
+
+def test_missing_training_run_ids_are_refused():
+    """Rows without a run ID used to be pooled into one fake run."""
+    frame = _two_runs(training_run_id=["r1", None, "r2", "r2", "r3", "r3"])
+    with pytest.raises(DataError, match="training_run_id"):
+        build_dataset(frame)
+
+
+def test_a_run_with_no_usable_target_values_does_not_extend_the_observed_domain():
+    """A configuration with no data is not an observed scale and must not make a far point interpolation."""
+    ghost = pl.DataFrame(
+        {
+            "training_run_id": ["ghost"],
+            "model_size__n": [1e10],
+            "dataset_size__d": [1e4],
+            "test_loss__ce": [None],
+        },
+        schema_overrides={"test_loss__ce": pl.Float64},
+    )
+    dataset = build_dataset(pl.concat([_two_runs(), ghost]))
+    assert dataset.n_runs == 3
+    assert dataset.config_values[:, 0].max() == pytest.approx(1e8)
+    assert "runs_without_target_values" in {note.code for note in dataset.notes}
+
+
+def test_csv_types_are_inferred_from_the_whole_file(tmp_path):
+    """A missing value written as NA after the first hundred rows used to fail to parse."""
+    n = 150
+    frame = pl.DataFrame(
+        {
+            "training_run_id": [f"r{i % 3}" for i in range(n)],
+            "model_size__n": [10.0 ** (6 + i % 3) for i in range(n)],
+            "dataset_size__d": [1e4] * n,
+            "test_loss__ce": [2.0 - 0.1 * (i % 3) for i in range(n)],
+        }
+    )
+    text = frame.write_csv().splitlines()
+    text[-1] = text[-1].rsplit(",", 1)[0] + ",NA"
+    path = tmp_path / "late.csv"
+    path.write_text("\n".join(text) + "\n")
+    assert read_table(path)["test_loss__ce"].null_count() == 1
+
+
+def test_loss_names_reported_as_metrics_are_lower_is_better():
+    from simple_scaling_laws.metrics import LOWER, describe
+
+    for name in ("cross_entropy", "log_loss", "nll", "loss"):
+        assert describe(name, is_loss=False).direction == LOWER, name

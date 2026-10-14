@@ -1,7 +1,8 @@
 """The built-in scaling-law family registry.
 
-Every law in this package has the same structure: it is **linear** in an offset and one or more amplitudes,
-and **nonlinear** in everything else. That structure is what makes the fitter small and robust -- given the
+Every law in this package has the same structure: it is **linear** in a small block of parameters -- an
+offset and one or more amplitudes, or for ``bounded-rational-power`` its two limits -- and **nonlinear** in
+everything else. That structure is what makes the fitter small and robust -- given the
 nonlinear parameters, the remaining ones are solved exactly by (bounded) linear least squares, so the
 optimizer only ever has to search a low-dimensional, well-behaved space.
 
@@ -57,7 +58,9 @@ SIGNED_EXPONENT = "signed_exponent"
 LOCATION = "location"
 #: How many e-folds of scale a change of regime is spread over.
 WIDTH = "width"
-#: The kinds that are slopes on log-log axes, and so are reported by ``ScalingLawModel.exponents``.
+#: The kinds that are exponents, and so are reported by ``ScalingLawModel.exponents``. Most are slopes on
+#: log-log axes; in the joint laws some are factors of one (Kaplan's ``rho``, Skaling's ``k``), and the
+#: slope in a resource is then a product, which each law's docstring gives.
 EXPONENT_KINDS: frozenset[str] = frozenset({EXPONENT, SIGNED_EXPONENT})
 #: The kinds that enter a law linearly and are therefore solved exactly rather than searched.
 LINEAR_KINDS: frozenset[str] = frozenset({OFFSET, AMPLITUDE})
@@ -75,11 +78,18 @@ class NonlinearSpec:
         lower: Lower bound.
         upper: Upper bound.
         grid: Starting values for the optimizer's grid of restarts, all within the bounds.
+        resolution: For a parameter measured on the predictors' own scale -- a break location or a
+            shift -- the smallest difference that matters, here the smallest observed scale. A value
+            then counts as sitting on a bound only when it is within a tiny fraction of
+            ``max(|bound|, resolution)`` of it. ``None`` keeps the default, a fraction of the box's
+            width, which is right for exponents and ratios but flags a break 1.7 decades inside an
+            eight-decade sweep as pinned.
     """
 
     lower: float
     upper: float
     grid: tuple[float, ...]
+    resolution: float | None = None
 
 
 #: The specification shared by every ordinary scaling exponent: non-negative, so a term decays as
@@ -89,8 +99,8 @@ EXPONENT_SPEC = NonlinearSpec(0.0, MAX_EXPONENT, EXPONENT_GRID)
 #: The specification of a ratio between two terms.
 SCALE_SPEC = NonlinearSpec(0.0, MAX_SCALE, SCALE_GRID)
 
-#: Bounds and seeds for a coupling exponent (``skaling-joint-power``'s ``k``): the range Videau et al.
-#: (2026) measured, and one, where the law is separable.
+#: A coupling exponent (``skaling-joint-power``'s ``k``): bounded like any exponent, and seeded across
+#: the range Videau et al. (2026) measured and at one, where the law is separable.
 COUPLING_SPEC = NonlinearSpec(0.0, MAX_EXPONENT, (0.3, 0.6, 1.0))
 
 #: The specification of a change in slope: as large as an exponent may be, in either direction.
@@ -113,8 +123,8 @@ class LawInstance:
         dataset_size: Dataset-size predictor columns, in order.
         param_names: Parameter names, in parameter-vector order.
         param_kinds: Parameter kinds, in parameter-vector order.
-        exponent_predictor: For each exponent -- each parameter that is a slope on log-log axes -- the
-            index of the predictor it applies to.
+        exponent_predictor: For each exponent (each parameter of a kind in :data:`EXPONENT_KINDS`), the
+            index of the predictor it is filed under.
     """
 
     law: str
@@ -351,12 +361,26 @@ class LawInstance:
     def from_dict(cls, data: dict[str, Any]) -> LawInstance:
         """Rebuild from :meth:`to_dict` output.
 
+        The law is rebuilt from its name and predictors and checked against what was stored, so an
+        artifact from a law that no longer exists, or whose parameters have since changed, fails here
+        with a :class:`LawError` rather than later with a wrong answer.
+
+        Raises:
+            LawError: If the stored law is unknown or does not match the current definition.
+
         Examples:
             >>> law = build_law("multiplicative-power", ("model_size__n",), ("dataset_size__d",))
             >>> LawInstance.from_dict(law.to_dict()) == law
             True
+            >>> stale = {**law.to_dict(), "param_names": ["E", "A", "a", "b"]}
+            >>> LawInstance.from_dict(stale)
+            Traceback (most recent call last):
+            ...
+            simple_scaling_laws.laws.LawError: Stored law 'multiplicative-power' does not match its current
+            definition: parameters ('E', 'A', 'a', 'b') were saved, ('E', 'A', 'alpha', 'beta') are
+            defined now
         """
-        return cls(
+        stored = cls(
             law=data["law"],
             model_size=tuple(data["model_size"]),
             dataset_size=tuple(data["dataset_size"]),
@@ -364,6 +388,13 @@ class LawInstance:
             param_kinds=tuple(data["param_kinds"]),
             exponent_predictor=tuple(data["exponent_predictor"]),
         )
+        current = build_law(stored.law, stored.model_size, stored.dataset_size)
+        if current != stored:
+            raise LawError(
+                f"Stored law {stored.law!r} does not match its current definition: parameters "
+                f"{stored.param_names} were saved, {current.param_names} are defined now"
+            )
+        return stored
 
 
 def _short(name: str) -> str:
@@ -379,13 +410,28 @@ def _names(base: str, columns: Sequence[str]) -> list[str]:
     return [f"{base}_{_short(c)}" for c in columns]
 
 
+def _role_names(base: str, model_size: Sequence[str], dataset_size: Sequence[str]) -> list[str]:
+    """Like :func:`_names` over both roles at once, naming the role too where suffixes alone would clash.
+
+    Examples:
+        >>> _role_names("s", ["model_size__n_params"], ["dataset_size__n_subjects"])
+        ['s_n_params', 's_n_subjects']
+        >>> _role_names("s", ["model_size__n"], ["dataset_size__n"])
+        ['s_model_size_n', 's_dataset_size_n']
+    """
+    names = _names(base, [*model_size, *dataset_size])
+    if len(set(names)) == len(names):
+        return names
+    return [f"{base}_{column.replace('__', '_')}" for column in (*model_size, *dataset_size)]
+
+
 def _exponent_specs(law: LawInstance, log_x: np.ndarray | None) -> tuple[NonlinearSpec, ...]:
     """Specifications for a law whose nonlinear block is nothing but exponents."""
     return (EXPONENT_SPEC,) * law.n_nonlinear
 
 
 def _three_levels(law: LawInstance) -> tuple[int, ...]:
-    """Each predictor enters through plain power terms: an amplitude and an exponent, so three levels."""
+    """Three levels of every predictor, the floor for a term that needs both a slope and a bend."""
     return (3,) * len(law.predictors)
 
 
@@ -535,8 +581,9 @@ class _SeparableInteractionPower:
 
     **What it costs.** Two exponents per predictor instead of one, so eight parameters where the
     separable law has five. The joint term is also exactly aliased with a main effect whenever its
-    other exponents are zero (``C N**-gamma`` cancels against ``A N**-alpha`` at ``delta = 0``), so on
-    data with no real interaction ``C`` and its exponents are not identified and land on a bound.
+    other exponents are zero (at ``delta = 0`` the joint term is ``C N**-gamma``, a second power term
+    in ``N`` that cancels ``A N**-alpha`` exactly when ``gamma = alpha``), so on data with no real
+    interaction ``C`` and its exponents are not identified and land on a bound.
     That is reported as ``parameter_at_bound``; it is the signal to fall back to ``separable-power``,
     which this law contains exactly at ``C = 0``.
 
@@ -553,7 +600,11 @@ class _SeparableInteractionPower:
     )
 
     nonlinear_specs = staticmethod(_exponent_specs)
-    min_levels = staticmethod(_three_levels)
+
+    @staticmethod
+    def min_levels(law: LawInstance) -> tuple[int, ...]:
+        """Three levels each on a grid; five when one predictor must carry all five parameters alone."""
+        return (5,) if len(law.predictors) == 1 else _three_levels(law)
 
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
@@ -653,7 +704,7 @@ class _ShiftedSeparablePower:
         predictors = model_size + dataset_size
         amps = _names("A", model_size) + _names("B", dataset_size)
         exps = _names("alpha", model_size) + _names("beta", dataset_size)
-        shifts = _names("s", predictors)
+        shifts = _role_names("s", model_size, dataset_size)
         return LawInstance(
             law=_ShiftedSeparablePower.name,
             model_size=model_size,
@@ -681,7 +732,8 @@ class _ShiftedSeparablePower:
         for column in range(k):
             low, high = _log_range(log_x, column)
             upper = float(np.exp(high))
-            shifts.append(NonlinearSpec(0.0, upper, (0.0, min(float(np.exp(low)), upper), min(1.0, upper))))
+            seeds = (0.0, min(float(np.exp(low)), upper), min(1.0, upper))
+            shifts.append(NonlinearSpec(0.0, upper, seeds, resolution=float(np.exp(low))))
         return (*([EXPONENT_SPEC] * k), *shifts)
 
     @staticmethod
@@ -1140,6 +1192,7 @@ class _BrokenPower:
             float(np.exp(low)),
             float(np.exp(high)),
             tuple(float(np.exp(low + q * span / 6.0)) for q in range(1, 6)),
+            resolution=float(np.exp(low)),
         )
         width = NonlinearSpec(span / 100.0, span / 2.0, (span / 40.0, span / 10.0, span / 4.0))
         return (slope, SLOPE_CHANGE_SPEC, location, width)
@@ -1301,4 +1354,11 @@ def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) 
     model_size, dataset_size = tuple(model_size), tuple(dataset_size)
     if not model_size and not dataset_size:
         raise LawError(f"Law {law!r} needs at least one predictor column")
-    return _LAWS[law].build(model_size, dataset_size)
+    instance = _LAWS[law].build(model_size, dataset_size)
+    duplicated = sorted({name for name in instance.param_names if instance.param_names.count(name) > 1})
+    if duplicated:
+        raise LawError(
+            f"Law {law!r} over {list(instance.predictors)} would give two parameters the same name "
+            f"{duplicated}; rename a predictor column so their suffixes differ"
+        )
+    return instance

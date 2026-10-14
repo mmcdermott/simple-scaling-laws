@@ -40,16 +40,17 @@ than wrong.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
 
 from .metrics import HIGHER
-from .model import DEFAULT_QUANTILES, POINT_ID, PREDICTION_KINDS, PredictionError, quantile_suffix
+from .model import DEFAULT_QUANTILES, POINT_ID, PREDICTION_KINDS, PredictionError, quantile_suffixes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from .model import ScalingLawModel
 
@@ -60,7 +61,7 @@ class ComparisonError(ValueError):
 
 def _as_mapping(models: Mapping[str, ScalingLawModel] | Sequence[ScalingLawModel]) -> dict:
     """Accept either a name-to-model mapping or a bare sequence of models."""
-    if isinstance(models, dict):
+    if isinstance(models, Mapping):
         named = dict(models)
     else:
         named = {f"system_{i}": model for i, model in enumerate(models)}
@@ -100,6 +101,12 @@ def _check_comparable(named: dict, target: str) -> None:
         raise ComparisonError(
             f"Target {target!r} was fit on different scales across systems ({sorted(kinds)}); the "
             "values are not on a common footing and differencing them would be meaningless."
+        )
+    directions = {model.target_kind(target).direction for model in named.values()}
+    if len(directions) != 1:
+        raise ComparisonError(
+            f"Target {target!r} is declared {sorted(directions)} is-better across systems, so which "
+            "system is best is not defined; describe it the same way in every fit."
         )
 
 
@@ -216,6 +223,10 @@ def compare(
     quantiles = [float(q) for q in quantiles]
     if any(not 0 <= q <= 1 for q in quantiles):
         raise ComparisonError(f"quantiles must lie in [0, 1], got {quantiles}")
+    try:
+        suffixes = quantile_suffixes(quantiles)
+    except ValueError as error:
+        raise ComparisonError(str(error)) from None
 
     paired, reason = _pairing_status(named, target)
     if not paired:
@@ -287,12 +298,12 @@ def compare(
             "direction": np.full(n_points, direction),
             "p_best": p_best[position],
         }
-        for q in quantiles:
-            columns[f"value__{quantile_suffix(q)}"] = np.quantile(values[name], q, axis=0)
+        for q, suffix in zip(quantiles, suffixes, strict=True):
+            columns[f"value__{suffix}"] = np.quantile(values[name], q, axis=0)
         if reference is not None:
             difference = values[name] - values[reference]
-            for q in quantiles:
-                columns[f"difference__{quantile_suffix(q)}"] = np.quantile(difference, q, axis=0)
+            for q, suffix in zip(quantiles, suffixes, strict=True):
+                columns[f"difference__{suffix}"] = np.quantile(difference, q, axis=0)
             better = difference < 0 if direction != HIGHER else difference > 0
             columns["p_better_than_reference"] = better.mean(axis=0)
         rows.append(pl.DataFrame(columns))

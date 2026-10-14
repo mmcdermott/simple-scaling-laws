@@ -280,3 +280,28 @@ def test_a_law_that_cannot_be_built_says_which_predictor_the_data_removed():
     )
     with pytest.raises(LawError, match=r"dataset_size__n_subjects.*single value"):
         fit(frame, law="kaplan-joint-power", n_draws=20)
+
+
+#: A non-degenerate truth for each law over one predictor: distinct exponents, a real break, distinct limits.
+SINGLE_PREDICTOR_TRUTHS = {
+    "separable-power": {"E": 1.0, "A": 2.0, "alpha": 0.3},
+    "multiplicative-power": {"E": 1.0, "A": 2.0, "alpha": 0.3},
+    "separable-interaction-power": {"E": 1.0, "A": 2.0, "C": 1.5, "alpha": 0.5, "gamma": 0.2},
+    "shifted-separable-power": {"E": 1.0, "A": 2.0, "alpha": 0.5, "s": 0.3},
+    "bounded-rational-power": {"E": 1.0, "I": 4.0, "A": 1.0, "alpha": 0.5},
+    "broken-power": CASES["broken-power"].truth,
+}
+
+
+@pytest.mark.parametrize("law", sorted(available_laws()))
+def test_a_single_predictor_law_is_identified_at_its_declared_minimum_levels(law):
+    """The same check over one model-size predictor, where a law's minimum can differ from a grid's."""
+    try:
+        instance = build_law(law, ("model_size__n_params",), ())
+    except LawError:
+        pytest.skip(f"{law} is not defined over a single predictor")
+    params = np.array([SINGLE_PREDICTOR_TRUTHS[law][name] for name in instance.param_names])
+    required = max(instance.min_predictor_levels)
+    assert _identified(instance, params, required)
+    if required > 3:
+        assert not _identified(instance, params, required - 1)

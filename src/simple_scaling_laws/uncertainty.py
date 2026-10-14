@@ -23,8 +23,8 @@ nearly as many parameters as configurations passes almost exactly through some o
 residuals are close to zero whatever the noise was, and resampling them perturbs nothing -- least of
 all the points a nonlinear parameter such as a break location rests on. The run-to-run and evaluation
 variances are estimated separately, so the share a configuration's leverage absorbed is known, and the
-floor puts it back. It only ever widens an interval; see :func:`corrected_residuals` for what it
-measured.
+floor puts it back. It never shrinks a configuration's pseudo-residual, so it pushes intervals wider,
+not narrower; see :func:`corrected_residuals` for what it measured.
 
 When the fit has no residual degrees of freedom left, no wild bootstrap is possible; the package
 falls back to a parametric bootstrap from the estimated variance components and says so in a note.
@@ -39,6 +39,7 @@ seconds, which is a bad trade for a package whose other goal is being small enou
 from __future__ import annotations
 
 import dataclasses
+import zlib
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -106,6 +107,32 @@ class Uncertainty:
     def quantiles(self, q: float | np.ndarray) -> np.ndarray:
         """Quantiles of each parameter across draws."""
         return np.quantile(self.params, q, axis=0)
+
+
+def target_seed(seed: int, target: str) -> int:
+    """The random seed used for anything random about one target: its bootstrap, its predictions.
+
+    Derived from the target's *name* rather than its position, so that the same target draws the
+    same cluster multipliers in two different experiments even when those experiments report
+    different sets of metrics. That is what lets :func:`simple_scaling_laws.compare` difference two
+    fits' draws and get the variance of the difference right rather than the sum of two variances.
+    It is also why a target's ``new-run`` predictions and correlation interval do not change when
+    other targets are added to or dropped from a request.
+
+    Args:
+        seed: The experiment-level seed.
+        target: The target column name.
+
+    Returns:
+        A seed in ``[0, 2**32)``.
+
+    Examples:
+        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_loss__ce")
+        True
+        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_metric__auroc")
+        False
+    """
+    return (seed + zlib.crc32(target.encode())) % (2**32)
 
 
 def _webb_signs(rng: np.random.Generator, n_clusters: int, n_draws: int) -> np.ndarray:
@@ -202,7 +229,9 @@ def corrected_residuals(
     configuration's mean pseudo-residual is also floored at ``tail * sqrt(H_c * v_c)``, where
     ``v_c`` is the variance of that configuration's weighted mean and ``tail`` is
     :func:`tail_correction`: the share of its noise the fit absorbed, which its residual cannot
-    show. Within-configuration deviations are left as they are.
+    show. Within-configuration deviations are left as they are, so the floor acts on each
+    configuration's mean -- the part a refit responds to -- and an individual run's pseudo-residual
+    can still move toward zero when its deviation points the other way.
 
     The floor is measured, not assumed. On the ``broken-power`` law -- six parameters on eight or
     twelve scales -- nominal 95% prediction intervals covered the truth 70-88% of the time without
@@ -327,16 +356,19 @@ def _run_sd_draws(
     per_run_var: np.ndarray,
     n_draws: int,
     fallback: float,
+    from_replicates: bool = True,
 ) -> np.ndarray:
     """Draws of the run-level standard deviation.
 
-    When replicate runs exist, configurations are resampled with replacement and their sum-of-squares
-    contributions recombined -- a nonparametric bootstrap of the pooled estimate that assumes nothing about
-    the shape of the run-to-run distribution. Otherwise the point estimate is repeated, since there is no
-    replicate information to resample.
+    When the point estimate came from replicate runs, configurations are resampled with replacement and
+    their sum-of-squares contributions recombined -- a nonparametric bootstrap of the pooled estimate that
+    assumes nothing about the shape of the run-to-run distribution. Otherwise the point estimate is
+    repeated. That includes the case where a few replicates exist but too few to be trusted, and the fit
+    used the residual scatter instead: resampling those replicates anyway would describe a different
+    estimate from the one reported, and one near-duplicate pair would put every draw at zero.
     """
     sums, corrections, dofs = _config_variance_parts(mean, config_index, per_run_var)
-    if sums.size == 0:
+    if sums.size == 0 or not from_replicates:
         return np.full(n_draws, fallback, dtype=float)
     index = rng.integers(0, sums.size, size=(n_draws, sums.size))
     total = sums[index].sum(axis=1) - corrections[index].sum(axis=1)
@@ -356,6 +388,8 @@ def bootstrap(
     n_draws: int = DEFAULT_DRAWS,
     seed: int = 0,
     target: str = "target",
+    run_sd_from_replicates: bool = True,
+    n_design_configurations: int | None = None,
 ) -> Uncertainty:
     """Estimate parameter uncertainty by wild cluster bootstrap over configurations.
 
@@ -372,6 +406,11 @@ def bootstrap(
         n_draws: Number of draws to retain.
         seed: Seed for the random number generator.
         target: Name of the target, used only in warning messages.
+        run_sd_from_replicates: Whether ``run_sd`` was estimated from replicate runs, and so may be
+            resampled from them; otherwise its draws repeat it.
+        n_design_configurations: Configurations in the whole experiment. When this target was
+            observed at all of them, a shortage of clusters is a property of the design and is
+            already reported as ``too_few_configurations``, so it is not repeated here.
 
     Returns:
         The :class:`Uncertainty` for this target.
@@ -438,7 +477,8 @@ def bootstrap(
     if method == "wild-cluster":
         multipliers = _webb_signs(rng, clusters.size, n_draws)[:, cluster_of_run]
         synthetic = fitted[None, :] + multipliers * pseudo[None, :]
-        if clusters.size < law.n_params + 2:
+        missing_here = n_design_configurations is None or clusters.size < n_design_configurations
+        if clusters.size < law.n_params + 2 and missing_here:
             notes.append(
                 Note(
                     "few_bootstrap_clusters",
@@ -489,7 +529,7 @@ def bootstrap(
         )
     return Uncertainty(
         params=draws,
-        run_sd=_run_sd_draws(rng, y, config_index, per_run_var, n_draws, run_sd),
+        run_sd=_run_sd_draws(rng, y, config_index, per_run_var, n_draws, run_sd, run_sd_from_replicates),
         run_deviations=deviations,
         method=method,
         n_failed=n_failed,

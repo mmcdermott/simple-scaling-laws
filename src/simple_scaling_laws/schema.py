@@ -360,6 +360,20 @@ def discover_schema(
     if overlap:
         raise SchemaError(f"Column(s) {sorted(overlap)} are used as both predictors and targets")
 
+    roles: dict[str, list[str]] = {}
+    for role, column in ids.items():
+        if column is not None:
+            roles.setdefault(column, []).append(role)
+    for role in PREDICTOR_ROLES:
+        for column in predictors[role]:
+            roles.setdefault(column, []).append(role)
+    for t in targets:
+        roles.setdefault(t.name, []).append(t.role)
+    shared = {column: names for column, names in roles.items() if len(names) > 1}
+    if shared:
+        detail = "; ".join(f"{column!r} as {', '.join(names)}" for column, names in shared.items())
+        raise SchemaError(f"A column can fill only one role, but more than one role was given to: {detail}")
+
     if primary_target is None:
         primary_target = _default_primary_target(targets)
     elif primary_target not in seen:

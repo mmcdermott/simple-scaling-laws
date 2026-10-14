@@ -91,3 +91,12 @@ def test_nonlinear_parameter_kinds_are_not_reported_as_exponents():
     assert shifted.n_nonlinear == 4
     assert kaplan.n_exponents == 2
     assert kaplan.n_nonlinear == 3
+
+
+def test_shift_names_stay_distinct_when_predictor_suffixes_coincide():
+    """``model_size__n`` and ``dataset_size__n`` both shorten to ``n``; their shifts must not merge."""
+    law = build_law("shifted-separable-power", ["model_size__n"], ["dataset_size__n"])
+    assert len(set(law.param_names)) == law.n_params
+    raw = raw_scale_params(law, np.array([1.0, 2.0, 1.5, 0.5, 0.4, 0.2, 0.5]), np.array([100.0, 16.0]))
+    assert raw["s_model_size_n"] == pytest.approx(20.0)
+    assert raw["s_dataset_size_n"] == pytest.approx(8.0)

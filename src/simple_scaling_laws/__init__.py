@@ -16,22 +16,45 @@ Examples:
     >>> model = fit(frame, n_draws=200, seed=0)
     >>> round(model.params("test_loss__cross_entropy")["alpha"], 1)
     0.3
+
+    Every error the package raises on bad input is a ``ValueError`` subclass exported here, so a
+    caller can catch the specific one:
+
+    >>> from simple_scaling_laws import LawError
+    >>> try:
+    ...     fit(frame, law="no-such-law")
+    ... except LawError as error:
+    ...     print(type(error).__name__)
+    LawError
 """
 
-from .api import fit, load_config
-from .artifact import FORMAT_VERSION
-from .compare import compare
-from .data import build_dataset
-from .laws import available_laws
-from .model import ScalingLawModel
+from .api import ConfigError, fit, load_config
+from .artifact import FORMAT_VERSION, ArtifactError, package_version
+from .compare import ComparisonError, compare
+from .data import DataError, build_dataset
+from .laws import LawError, available_laws
+from .metrics import MetricError
+from .model import PredictionError, ScalingLawModel
 from .notes import Note
-from .schema import Schema, discover_schema
+from .schema import Schema, SchemaError, discover_schema
+
+#: The installed version, from the package metadata (set by the release tag).
+__version__ = package_version()
 
 __all__ = [
     "FORMAT_VERSION",
+    "ArtifactError",
+    "ComparisonError",
+    "ConfigError",
+    "DataError",
+    "LawError",
+    "MetricError",
     "Note",
+    "PredictionError",
     "ScalingLawModel",
     "Schema",
+    "SchemaError",
+    "__version__",
     "available_laws",
     "build_dataset",
     "compare",

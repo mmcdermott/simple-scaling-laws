@@ -132,6 +132,8 @@ def simulate_runs(
     eval_sds = _per_target(eval_sd, targets)
     model_sizes, dataset_sizes = tuple(model_sizes), tuple(dataset_sizes)
     axes = [model_sizes, dataset_sizes] if dataset_sizes else [model_sizes]
+    if len(predictors) < len(axes):
+        raise ValueError(f"Need {len(axes)} predictor name(s) for this design, got {list(predictors)}")
     predictors = tuple(predictors[: len(axes)])
     instance = build_law(law, predictors[:1], predictors[1:])
 
@@ -140,6 +142,12 @@ def simulate_runs(
         missing = set(instance.param_names) - set(values)
         if missing:
             raise ValueError(f"Target {target!r} is missing parameter(s) {sorted(missing)} for law {law!r}")
+        unknown = set(values) - set(instance.param_names)
+        if unknown:
+            raise ValueError(
+                f"Target {target!r} has parameter(s) {sorted(unknown)} that law {law!r} does not use; "
+                f"its parameters are {list(instance.param_names)}"
+            )
         vectors[target] = np.array([float(values[name]) for name in instance.param_names])
 
     # Independent streams, so that changing the number of evaluation resamples does not also change
@@ -184,7 +192,9 @@ def simulate_runs(
                 for name, value in zip(predictors, config, strict=True):
                     rows[name].append(value)
                 for target in targets:
-                    idiosyncratic = eval_sds[target] * np.sqrt(1.0 - shared_eval_fraction)
+                    # Only paired test sets have a shared part to split off; unpaired ones keep it all.
+                    fraction = shared_eval_fraction if paired_test_sets else 0.0
+                    idiosyncratic = eval_sds[target] * np.sqrt(1.0 - fraction)
                     noise = eval_rng.normal(0.0, idiosyncratic) if idiosyncratic > 0 else 0.0
                     if paired_test_sets:
                         noise += shared[target][evaluation]

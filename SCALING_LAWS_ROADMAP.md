@@ -4,19 +4,20 @@ This document describes proposed extensions to `simple-scaling-laws` for model/d
 
 ## Status
 
-Sections 1-5 below are implemented, and the README documents each law. What follows is kept as the
-design record; where the implementation went a different way, this is how:
+Sections 1-5 below are implemented, plus one joint law the roadmap did not propose (Skaling), and the
+README documents each law. What follows is kept as the design record; where the implementation went a different way, this is how:
 
-| Proposal                             | Outcome                                                                  |
-| ------------------------------------ | ------------------------------------------------------------------------ |
-| 1. Interaction law                   | `separable-interaction-power`, any number of predictors                  |
-| 2. Kaplan-style joint scaling        | `kaplan-joint-power`, with `rho = alpha_N / alpha_D`                     |
-| 3. Shifted power (Zhai et al.)       | `shifted-separable-power`; needs four levels per predictor               |
-| 4. M4 / bounded small-data scaling   | `bounded-rational-power`, shape exponent fixed at 1 only                 |
-| 5. Broken Neural Scaling Laws        | `broken-power`, one break, one predictor                                 |
-| Internal refactor (`ParameterSpec`)  | `LawInstance.nonlinear_specs`: per-parameter bounds and seeds, law-owned |
-| Raw-scale conversion behind the law  | `LawInstance.raw_scale_params`                                           |
-| Diagnostics for weak identifiability | `ill_conditioned_fit`; law-specific `too_few_predictor_levels`           |
+| Proposal                             | Outcome                                                                             |
+| ------------------------------------ | ----------------------------------------------------------------------------------- |
+| 1. Interaction law                   | `separable-interaction-power`, any number of predictors                             |
+| 2. Kaplan-style joint scaling        | `kaplan-joint-power`, with `rho = alpha_N / alpha_D`                                |
+| 3. Shifted power (Zhai et al.)       | `shifted-separable-power`; needs four levels per predictor                          |
+| 4. M4 / bounded small-data scaling   | `bounded-rational-power`, shape exponent fixed at 1 only                            |
+| 5. Broken Neural Scaling Laws        | `broken-power`, one break, one predictor                                            |
+| Internal refactor (`ParameterSpec`)  | `LawInstance.nonlinear_specs`: per-parameter bounds and seeds, law-owned            |
+| Raw-scale conversion behind the law  | `LawInstance.raw_scale_params`                                                      |
+| Diagnostics for weak identifiability | `ill_conditioned_fit`; law-specific `too_few_predictor_levels`                      |
+| Skaling joint law (Videau et al.)    | `skaling-joint-power`; Kaplan with a free inner data exponent, separable at `k = 1` |
 
 Still open:
 
@@ -221,4 +222,5 @@ Do not automatically prefer a richer law because its in-sample residual is lower
 - Bansal et al. (2022), *Data Scaling Laws in NMT: The Effect of Noise and Architecture*, ICML 2022, arXiv:2202.01994.
 - Alabdulmohsin, Neyshabur, and Zhai (2022), *Revisiting Neural Scaling Laws in Language and Vision*, NeurIPS 2022.
 - Caballero et al. (2022), *Broken Neural Scaling Laws*, arXiv:2210.14891.
+- Videau, Youbi-Idrissi, Lopez-Paz and Ahuja (2026), *Skaling: Chinchilla's Exponents Meet Kaplan's Coupling*, arXiv:2608.07222.
 - Bahri et al. (2024), *Explaining Neural Scaling Laws*, PNAS 121(27):e2311878121, arXiv:2102.06701.
