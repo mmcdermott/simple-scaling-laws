@@ -8,7 +8,7 @@ from simple_scaling_laws.model import raw_scale_params
 
 
 def test_shifted_power_reduces_to_separable_when_shifts_are_zero():
-    """M3-style shifts nest the ordinary separable power law."""
+    """Shifts nest the ordinary separable power law."""
     shifted = build_law("shifted-separable-power", ["model_size__n"], ["dataset_size__d"])
     separable = build_law("separable-power", ["model_size__n"], ["dataset_size__d"])
     log_x = np.log(np.array([[0.25, 0.5], [1.0, 2.0], [4.0, 8.0]]))

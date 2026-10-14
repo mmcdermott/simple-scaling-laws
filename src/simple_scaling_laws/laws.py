@@ -636,10 +636,13 @@ class _ShiftedSeparablePower:
     the power gives the term a finite value ``A * s ** -alpha`` at zero scale and leaves its
     large-scale behavior untouched, so the pre-asymptotic points stop dragging the exponent down.
 
-    Shifted power laws of this kind are used for data scaling by Bansal et al. (2022), *Data Scaling
-    Laws in NMT*, and for model scaling by Zhai et al. (2022), *Scaling Vision Transformers*;
-    Caballero et al. (2022) catalogue the single-predictor form as **M3**. The separable sum over
-    several predictors is this package's arrangement of it.
+    The single-predictor form is the saturating law ``E = a * (C + d) ** -b + c`` that Zhai et al.
+    (2022), *Scaling Vision Transformers*, fit to error against compute, where the shift ``d`` gives a
+    zero-compute model a finite error. A related but different shifted form, ``alpha * (D ** -1 + C)
+    ** p`` from Bansal et al. (2022), *Data Scaling Laws in NMT*, shifts the *reciprocal* of the scale
+    and so bounds the large-scale end instead; that one is what Alabdulmohsin et al. (2022) and
+    Caballero et al. (2022) label **M3**, and it is not this law. The separable sum over several
+    predictors is this package's arrangement.
 
     **What it costs.** One more parameter per predictor, and a fourth level of every predictor: with
     only three there are two contrasts from which to learn an amplitude, an exponent *and* a shift.
@@ -853,13 +856,15 @@ class _BoundedRationalPower:
     ``g`` an ordinary separable sum of power terms: large ``g`` (small scale) gives ``I``, small ``g``
     (large scale) gives ``E``, and in between ``f - E`` falls off as a power law.
 
-    It is the ``lambda = 1`` case of the **M4** estimator of Alabdulmohsin, Neyshabur & Zhai (2022),
+    It is a special case of the **M4** estimator of Alabdulmohsin, Neyshabur & Zhai (2022),
     *Revisiting Neural Scaling Laws in Language and Vision*, whose defining relation is
-    ``(f - E) / (I - f) ** lambda = g``. Only at ``lambda = 1`` can that be solved for ``f`` in closed
-    form, and only then is ``f`` linear in ``(E, I)`` given ``g`` -- which is what lets the fitter
-    solve both limits exactly instead of searching for them. Summing ``g`` over several predictors is
-    this package's arrangement; the paper's is a single power term. The name records the form
-    actually fit rather than claiming the full family.
+    ``(eps_x - eps_inf) / (eps_0 - eps_x) ** alpha = beta * x ** c`` with ``c < 0``. Here ``eps_inf``
+    is ``E``, ``eps_0`` is ``I``, the right-hand side is ``g``, and the paper's shape exponent -- its
+    ``alpha``, unrelated to this package's power-law exponents -- is fixed at one. Only then can the
+    relation be solved for ``f`` in closed form, and only then is ``f`` linear in ``(E, I)`` given
+    ``g`` -- which is what lets the fitter solve both limits exactly instead of searching for them.
+    Summing ``g`` over several predictors is this package's arrangement; the paper's is a single
+    power term. The name records the form actually fit rather than claiming the full family.
 
     **What it costs, and when not to use it.** One more parameter than the separable law, the
     plateau. It is identified only if the experiment reaches far enough down to see the curve bend

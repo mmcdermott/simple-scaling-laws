@@ -265,8 +265,9 @@ A power law is a straight line on log-log axes all the way down, and diverges at
 curves flatten toward something finite at the small end of an experiment, and those pre-asymptotic
 points drag a plain power law's exponent toward zero. `shifted-separable-power` puts a non-negative
 shift inside each power term, `E + A·(N + s_N)^-α + B·(D + s_D)^-β`, which gives the term a finite
-value at zero scale and leaves its large-scale behavior alone. This is the shifted form used by
-Bansal et al. (2022) and Zhai et al. (2022), catalogued as M3 by Caballero et al. (2022).
+value at zero scale and leaves its large-scale behavior alone. Its single-predictor form is the
+saturating law `a·(C + d)^-b + c` of Zhai et al. (2022). It is not the "M3" form of Bansal et al.
+(2022), `α·(D^-1 + C)^p`, which shifts the reciprocal of the scale and bounds the large end instead.
 
 The cost of ignoring a shift that is there is not subtle. Fitting the plain law to shifted data:
 
@@ -365,7 +366,8 @@ Every law above grows without limit as scale shrinks. A real loss does not: a mo
 almost nothing sits at chance and stays there. `bounded-rational-power` has a plateau `I` at the
 small end as well as a floor `E` at the large one, and moves between them as a weighted average,
 `(E + I·g) / (1 + g)`, whose weight `g = A·N^-α + B·D^-β` is an ordinary separable sum of power
-terms. It is the `λ = 1` case of the M4 estimator of Alabdulmohsin, Neyshabur & Zhai (2022) -- the
+terms. It is the M4 estimator of Alabdulmohsin, Neyshabur & Zhai (2022) with its shape exponent
+(the paper's α, in `(f - E) / (I - f)^α = g`) fixed at one -- the
 one case that can be written down in closed form, and so the one whose two limits the fitter can
 solve exactly rather than search for.
 

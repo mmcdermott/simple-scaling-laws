@@ -87,7 +87,7 @@ This law captures model-limited and data-limited regimes and smooth saturation a
 
 Because `R` is a nonlinear scale parameter rather than an exponent, this law should be implemented only after the nonlinear-parameter metadata/seeding interface is generalized.
 
-## 3. Shifted power / M3
+## 3. Shifted power (Zhai et al.)
 
 A useful small-scale correction is
 
@@ -95,7 +95,7 @@ A useful small-scale correction is
 f(n,d)=E+A(n+s_N)^{-\alpha}+B(d+s_D)^{-\beta}.
 ```
 
-The shift prevents divergence as a predictor approaches zero and can fit observations before the clean asymptotic power-law regime. Related shifted forms appear in scaling-law work including Zhai et al. (2022) and Bansal et al. (2022); Caballero et al. discuss this class as M3.
+The shift prevents divergence as a predictor approaches zero and can fit observations before the clean asymptotic power-law regime. This is the single-predictor form `E = a(C+d)^{-b} + c` of Zhai et al. (2022). The form Alabdulmohsin et al. (2022) and Caballero et al. (2022) call M3 is a different one, Bansal et al.'s (2022) `L = alpha (D^{-1} + C)^p`, which shifts the reciprocal of the scale and so bounds the large-scale end rather than the small one.
 
 The shifts `s_N` and `s_D` are nonlinear parameters but amplitudes remain linear conditional on them and the exponents.
 
@@ -104,15 +104,15 @@ The shifts `s_N` and `s_D` are nonlinear parameters but amplitudes remain linear
 Alabdulmohsin, Neyshabur, and Zhai (2022) propose
 
 ```math
-\frac{\epsilon_x-\epsilon_\infty}{(\epsilon_0-\epsilon_x)^\lambda}=\beta x^c,
+\frac{\epsilon_x-\epsilon_\infty}{(\epsilon_0-\epsilon_x)^\alpha}=\beta x^c,
 ```
 
-where `epsilon_0` is the small-scale/random-guessing plateau and `epsilon_inf` the large-scale limit.
+where `c < 0`, `epsilon_0` is the small-scale/random-guessing plateau and `epsilon_inf` the large-scale limit. The paper's `alpha` is a shape exponent, unrelated to the power-law exponents named `alpha` elsewhere in this package.
 
 A multidimensional extension is
 
 ```math
-\frac{f-E}{(I-f)^\lambda}=g(n,d),
+\frac{f-E}{(I-f)^{\alpha_{M4}}}=g(n,d),
 ```
 
 with a simple choice
@@ -121,7 +121,7 @@ with a simple choice
 g(n,d)=A n^{-\alpha}+B d^{-\beta}.
 ```
 
-For `lambda = 1`, the response is explicit:
+For `alpha_M4 = 1`, the response is explicit:
 
 ```math
 f=\frac{E+I g}{1+g}.
@@ -129,7 +129,7 @@ f=\frac{E+I g}{1+g}.
 
 A good implementation sequence is therefore:
 
-1. `bounded-rational-power` for the explicit `lambda=1` special case;
+1. `bounded-rational-power` for the explicit `alpha_M4 = 1` special case;
 2. full `m4-power` once nonlinear optimization and identifiability diagnostics are robust.
 
 Do not silently infer the small-scale limit `I`. AUROC has a natural chance value of 0.5, but accuracy, AUPRC, and cross-entropy generally require task-specific information. Add target configuration for an explicit small-scale limit.
@@ -162,7 +162,7 @@ The current parameter representation assumes
 [offset, amplitudes..., exponents...]
 ```
 
-with every nonlinear parameter treated as a nonnegative exponent. That assumption should be generalized before Kaplan/M3/M4/BNSL support.
+with every nonlinear parameter treated as a nonnegative exponent. That assumption should be generalized before Kaplan/shifted/M4/BNSL support.
 
 A law should eventually own:
 
@@ -211,8 +211,8 @@ Do not automatically prefer a richer law because its in-sample residual is lower
 ## Recommended PR sequence
 
 1. **Interaction surface**: add the model/data interaction law with focused tests and law-owned raw-scale conversion.
-2. **General nonlinear parameters**: refactor parameter metadata/seeding; add Kaplan and shifted/M3 laws.
-3. **Bounded small-data laws**: add the rational `lambda=1` law, then full M4 if stable.
+2. **General nonlinear parameters**: refactor parameter metadata/seeding; add Kaplan and shifted laws.
+3. **Bounded small-data laws**: add the rational `alpha_M4 = 1` law, then full M4 if stable.
 4. **Broken laws**: add a conservatively scoped BNSL implementation after the simpler laws have been exercised on real data.
 
 ## References

@@ -8,7 +8,7 @@ from simple_scaling_laws.model import raw_scale_params
 
 
 def test_bounded_rational_approaches_both_limits():
-    """The lambda=1 M4 link approaches I at tiny scale and E at huge scale."""
+    """The M4 link with its shape exponent at one approaches I at tiny scale and E at huge scale."""
     law = build_law("bounded-rational-power", ["model_size__n"], [])
     # E, I, A, alpha.
     params = np.array([1.0, 4.0, 2.0, 0.5])
@@ -28,7 +28,7 @@ def test_bounded_rational_stays_between_limits_for_positive_g():
     assert np.all(values < 2.5)
 
 
-def test_bounded_rational_matches_lambda_one_m4_relation():
+def test_bounded_rational_matches_m4_relation_at_unit_shape():
     """The fitted response exactly satisfies (f-E)/(I-f) = g."""
     law = build_law("bounded-rational-power", ["model_size__n"], ["dataset_size__d"])
     params = np.array([1.0, 3.0, 2.0, 4.0, 0.5, 0.25])
