@@ -40,6 +40,7 @@ than wrong.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -49,7 +50,7 @@ from .metrics import HIGHER
 from .model import DEFAULT_QUANTILES, POINT_ID, PREDICTION_KINDS, PredictionError, quantile_suffixes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from .model import ScalingLawModel
 
@@ -60,7 +61,7 @@ class ComparisonError(ValueError):
 
 def _as_mapping(models: Mapping[str, ScalingLawModel] | Sequence[ScalingLawModel]) -> dict:
     """Accept either a name-to-model mapping or a bare sequence of models."""
-    if isinstance(models, dict):
+    if isinstance(models, Mapping):
         named = dict(models)
     else:
         named = {f"system_{i}": model for i, model in enumerate(models)}
@@ -100,6 +101,12 @@ def _check_comparable(named: dict, target: str) -> None:
         raise ComparisonError(
             f"Target {target!r} was fit on different scales across systems ({sorted(kinds)}); the "
             "values are not on a common footing and differencing them would be meaningless."
+        )
+    directions = {model.target_kind(target).direction for model in named.values()}
+    if len(directions) != 1:
+        raise ComparisonError(
+            f"Target {target!r} is declared {sorted(directions)} is-better across systems, so which "
+            "system is best is not defined; describe it the same way in every fit."
         )
 
 

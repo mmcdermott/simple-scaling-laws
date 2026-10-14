@@ -67,6 +67,11 @@ KNOWN_METRICS: dict[str, tuple[str, str]] = {
     "mse": (REAL, LOWER),
     "mae": (REAL, LOWER),
     "rmse": (REAL, LOWER),
+    # Losses reported as metrics: unbounded, smaller is better.
+    "loss": (REAL, LOWER),
+    "cross_entropy": (REAL, LOWER),
+    "log_loss": (REAL, LOWER),
+    "nll": (REAL, LOWER),
 }
 
 #: Keys accepted when describing a target explicitly.

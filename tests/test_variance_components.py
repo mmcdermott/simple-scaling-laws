@@ -171,3 +171,23 @@ def test_run_sd_draws_follow_the_estimate_the_fit_chose():
     assert components["source"] == "residual"
     assert model.fits["test_loss__ce"].run_sd > 0.01
     assert np.all(model.draws["test_loss__ce"].run_sd == pytest.approx(model.fits["test_loss__ce"].run_sd))
+
+
+def test_simulate_rejects_parameters_the_law_does_not_use():
+    with pytest.raises(ValueError, match="does not use"):
+        simulate_runs({"test_loss__ce": {**TRUE_LOSS, "typo": 9.0}})
+
+
+def test_unpaired_simulated_evaluation_noise_keeps_its_full_variance():
+    """``shared_eval_fraction`` splits paired noise; without pairing there is nothing to split off."""
+    frame = simulate_runs(
+        {"test_loss__ce": TRUE_LOSS},
+        runs_per_config=1,
+        evaluations_per_run=200,
+        eval_sd=0.1,
+        shared_eval_fraction=0.9,
+        paired_test_sets=False,
+        seed=0,
+    )
+    within = frame.group_by("training_run_id").agg(pl.col("test_loss__ce").std())["test_loss__ce"]
+    assert float(within.mean()) == pytest.approx(0.1, rel=0.1)

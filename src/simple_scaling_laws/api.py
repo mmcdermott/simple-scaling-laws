@@ -438,6 +438,8 @@ def fit(
     targets = targets if targets is not None else settings.get("targets")
     n_draws = int(n_draws if n_draws is not None else settings.get("n_draws", DEFAULT_DRAWS))
     seed = int(seed if seed is not None else settings.get("seed", 0))
+    if n_draws < 1:
+        raise ValueError(f"n_draws must be at least 1, got {n_draws}")
 
     dataset = build_dataset(source, columns=columns, primary_target=primary_target, targets=targets)
     notes: list[Note] = list(dataset.notes)

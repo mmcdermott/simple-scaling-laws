@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -18,7 +19,7 @@ from .schema import Schema
 from .uncertainty import Uncertainty, from_arrays, target_seed, to_arrays
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
     from pathlib import Path
 
 #: Prediction quantiles reported when the caller does not choose.
@@ -66,6 +67,12 @@ def quantile_suffix(q: float) -> str:
 
         >>> [quantile_suffix(q) for q in (0.0, 1.0)]
         ['min', 'max']
+
+        Quantiles are rounded to three decimals first, so one that rounds to an endpoint is named
+        for it:
+
+        >>> quantile_suffix(0.9996)
+        'max'
     """
     for value, name in NAMED_QUANTILES.items():
         if abs(q - value) < 5e-4:
@@ -703,7 +710,7 @@ def _run_noise(rng: np.random.Generator, draws: Uncertainty, shape: tuple[int, i
 
 def _points_frame(points: Any, predictors: Sequence[str]) -> pl.DataFrame:
     """Coerce a prediction request into a frame with the predictors and a ``point_id``."""
-    if isinstance(points, dict):
+    if isinstance(points, Mapping):
         frame = pl.DataFrame(points)
     else:
         try:

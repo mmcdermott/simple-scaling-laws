@@ -18,6 +18,9 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import polars as pl
+import yaml
+
 from .api import fit as fit_model
 from .artifact import package_version
 from .compare import compare as compare_models
@@ -27,8 +30,6 @@ from .uncertainty import DEFAULT_DRAWS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
-
-    import polars as pl
 
 
 class CLIError(ValueError):
@@ -352,7 +353,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     try:
         return handlers[args.command](args)
-    except (CLIError, ValueError, KeyError, FileNotFoundError) as exc:
+    except (CLIError, ValueError, KeyError, OSError, pl.exceptions.PolarsError, yaml.YAMLError) as exc:
+        # Every one of these is a problem with the user's input -- a malformed table, config or
+        # argument -- and deserves a one-line message rather than a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

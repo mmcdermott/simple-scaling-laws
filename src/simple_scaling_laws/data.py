@@ -27,6 +27,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: evaluation-covariance estimate.
 MIN_SHARED_EVALUATIONS = 3
 
+#: Spellings of a missing value in a CSV file.
+CSV_NULL_VALUES: tuple[str, ...] = ("", "NA", "N/A", "NaN", "nan", "null", "None")
+
 
 class DataError(ValueError):
     """Raised when an input table cannot be used for scaling-law fitting."""
@@ -67,7 +70,9 @@ def read_table(source: str | Path | pl.DataFrame | Any) -> pl.DataFrame:
             case ".parquet" | ".pq":
                 return pl.read_parquet(path)
             case ".csv":
-                return pl.read_csv(path)
+                # Infer types from every row, not the first hundred, and read the usual spellings of a
+                # missing value as missing: either one, late in a file, otherwise fails to parse.
+                return pl.read_csv(path, infer_schema_length=None, null_values=list(CSV_NULL_VALUES))
             case other:
                 raise DataError(f"Unsupported input suffix {other!r}; use .parquet or .csv")
     try:
@@ -218,23 +223,6 @@ class Dataset:
             }
             for j, name in enumerate(self.schema.predictors)
         }
-
-    def normalize(self, values: np.ndarray) -> np.ndarray:
-        """Convert raw predictor values to the log-normalized scale used by the laws.
-
-        Args:
-            values: Raw predictor values, shape ``(n_points, n_predictors)``.
-
-        Returns:
-            ``log(values / reference)``, same shape.
-
-        Raises:
-            DataError: If any value is not strictly positive and finite.
-        """
-        values = np.asarray(values, dtype=float)
-        if not np.all(np.isfinite(values)) or np.any(values <= 0):
-            raise DataError("Predictor values must be finite and strictly positive")
-        return np.log(values) - np.log(self.reference)
 
 
 def _validate_predictors(frame: pl.DataFrame, schema: Schema) -> pl.DataFrame:
@@ -488,9 +476,17 @@ def build_dataset(
         raise DataError("Input table is empty")
     schema = discover_schema(frame.columns, columns, primary_target, targets)
 
+    n_missing_ids = frame[schema.training_run_id].null_count()
+    if n_missing_ids:
+        raise DataError(
+            f"{n_missing_ids} row(s) have no {schema.training_run_id!r}. Every evaluation row must name "
+            "the training run it came from, since runs are the unit of observation."
+        )
     frame = _validate_predictors(frame, schema)
     frame = frame.with_columns(pl.col(schema.training_run_id).cast(pl.String))
     notes = _id_consistency_notes(frame, schema)
+    frame, ghost_notes = _drop_runs_without_targets(frame, schema)
+    notes.extend(ghost_notes)
 
     run_table = frame.select(schema.training_run_id, *schema.predictors).unique().sort(schema.training_run_id)
     run_ids = tuple(run_table[schema.training_run_id].to_list())
@@ -528,14 +524,26 @@ def build_dataset(
     )
 
 
-def config_matrix(dataset: Dataset, runs: Sequence[int] | np.ndarray) -> np.ndarray:
-    """Log-normalized predictors for a sequence of configuration indices.
+def _drop_runs_without_targets(frame: pl.DataFrame, schema: Schema) -> tuple[pl.DataFrame, list[Note]]:
+    """Drop runs that have no usable value for any target, so they cannot define the observed domain.
 
-    Args:
-        dataset: The dataset supplying the configurations.
-        runs: Configuration indices, typically ``observations.config_index``.
-
-    Returns:
-        Array of shape ``(len(runs), n_predictors)``.
+    A run with no data says nothing about the scaling law, but its predictor values would otherwise count as
+    an observed configuration -- widening the domain, so a far prediction is labelled interpolation.
     """
-    return dataset.log_x[np.asarray(runs, dtype=int)]
+    usable = pl.any_horizontal(
+        pl.col(target).cast(pl.Float64, strict=False).is_finite().fill_null(False)
+        for target in schema.target_names
+    )
+    run_col = schema.training_run_id
+    kept = frame.filter(usable.any().over(run_col))
+    dropped = frame[run_col].n_unique() - kept[run_col].n_unique()
+    if not dropped:
+        return frame, []
+    note = Note(
+        "runs_without_target_values",
+        "warning",
+        f"{dropped} training run(s) have no usable value for any target and were left out entirely, "
+        "including from the observed domain and the count of configurations.",
+        {"n_runs": int(dropped)},
+    )
+    return kept, [note]

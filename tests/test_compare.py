@@ -300,3 +300,19 @@ def test_an_assumed_direction_is_flagged():
             reference="a",
         )
     assert table["direction"].unique().to_list() == [HIGHER]
+
+
+def test_systems_that_disagree_on_which_direction_is_better_are_refused():
+    """Which system is best is undefined if one fit calls lower better and another higher."""
+    lower = fit(arm(seed=0), n_draws=50, seed=0)
+    higher = fit(arm(seed=1), n_draws=50, seed=0, targets={"test_loss__ce": {"direction": "higher"}})
+    with pytest.raises(ComparisonError, match="is-better across systems"):
+        compare({"lower": lower, "higher": higher}, POINTS)
+
+
+def test_a_read_only_mapping_of_systems_is_accepted(systems):
+    """Any mapping names its systems, not only a dict."""
+    from types import MappingProxyType
+
+    table = compare(MappingProxyType(dict(systems)), POINTS)
+    assert set(table["system"]) == set(systems)
