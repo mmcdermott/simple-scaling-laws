@@ -88,6 +88,12 @@ CASES = {
         contains_separable=True,
     ),
     "kaplan-joint-power": Case({"E": 1.0, "A": 2.0, "rho": 0.5, "beta": 0.6, "R": 1.0}, levels=4),
+    # Contains the separable law at ``k = 1``, but as an interior point that the data identify rather
+    # than an alias, so it is not in NESTING; see test_skaling_law.py.
+    "skaling-joint-power": Case(
+        {"E": 1.0, "A": 2.0, "alpha": 0.5, "beta": 0.4, "k": 0.5, "R": 1.0},
+        levels=3,
+    ),
     # Contains the separable law only as a limit -- an ever-higher plateau with ever-smaller weights
     # -- which is exactly what a fit to separable data runs toward.
     "bounded-rational-power": Case(

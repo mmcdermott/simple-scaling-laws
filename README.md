@@ -147,7 +147,7 @@ columns:
 
 ## What it fits
 
-Seven law families. Each is linear in its offset and amplitudes, which are solved exactly, and
+Eight law families. Each is linear in its offset and amplitudes, which are solved exactly, and
 nonlinear in a handful of other parameters -- exponents, and for the richer laws a shift, a ratio or
 a break -- which are searched:
 
@@ -165,6 +165,8 @@ shifted-separable-power
     E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite small-scale limit)
 kaplan-joint-power
     E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
+skaling-joint-power
+    E + A * (N**-alpha + R * D**-beta)**k (Videau et al. Skaling law: coupled model/data terms)
 bounded-rational-power
     (E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small scale, floor E at large)
 broken-power
@@ -360,6 +362,51 @@ Measured on 4x4 designs, the nominal 95% prediction intervals of both laws cover
 88-100% of the time, inside the grid and a decade beyond it. On a 3x3 grid with two runs per
 configuration the Kaplan law's covered 93-95%, but only because the bootstrap puts back noise that
 a fit this close to saturated absorbs (78-85% without it); prefer the larger grid.
+
+### When model size and data are coupled, but neither is ever harmful
+
+`skaling-joint-power` is the Skaling law of Videau, Youbi-Idrissi, Lopez-Paz & Ahuja (2026),
+`E + A·(N^-α + R·D^-β)^k`: the two power terms of the separable law, summed and raised to one
+*coupling exponent* `k`. At `k = 1` it is exactly `separable-power`; with the inner data exponent fixed
+at one it is `kaplan-joint-power`. For `0 < k < 1` each resource makes the other more valuable --
+the coupling the authors measured on large language-model grids, with `k` from about 0.3 to 0.9 --
+and the loss still falls in both. With ample data it is a power law in model size with exponent
+`α·k`, with an ample model a power law in data with exponent `β·k`.
+
+```pycon
+>>> truth = {"E": 1.0, "A": 2.0, "alpha": 0.5, "beta": 0.4, "k": 0.5, "R": 1.0}
+>>> joint = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     law="skaling-joint-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+...     **grid,
+... )
+>>> skaling = fit(joint, law="skaling-joint-power", n_draws=200, seed=0)
+>>> {k: round(v, 2) for k, v in skaling.params("test_loss__cross_entropy").items()}
+{'E': 1.03, 'A': 1.98, 'alpha': 0.5, 'beta': 0.4, 'k': 0.5, 'R': 0.99}
+
+```
+
+On the separable data from the section above, which have no coupling at all, the fit puts `k` at
+one and says nothing, because the separable law it then reduces to is the right answer. Its `A` and
+`R·A` are then that law's two amplitudes:
+
+```pycon
+>>> skaling_on_plain = fit(separable, law="skaling-joint-power", n_draws=200, seed=0)
+>>> round(skaling_on_plain.params("test_loss__cross_entropy")["k"], 2)
+1.0
+>>> [note.code for note in skaling_on_plain.warnings]
+[]
+
+```
+
+It is defined for exactly one model-size and one dataset-size column. The paper fit 117 to 404 runs
+per grid; on simulated 3x3 grids with two runs per configuration `k` still came back within about
+0.01 of the truth and nominal 95% prediction intervals covered 88-100%.
 
 ### When the experiment reaches down to chance
 

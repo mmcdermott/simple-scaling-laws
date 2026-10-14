@@ -89,6 +89,10 @@ EXPONENT_SPEC = NonlinearSpec(0.0, MAX_EXPONENT, EXPONENT_GRID)
 #: The specification of a ratio between two terms.
 SCALE_SPEC = NonlinearSpec(0.0, MAX_SCALE, SCALE_GRID)
 
+#: Bounds and seeds for a coupling exponent (``skaling-joint-power``'s ``k``): the range Videau et al.
+#: (2026) measured, and one, where the law is separable.
+COUPLING_SPEC = NonlinearSpec(0.0, MAX_EXPONENT, (0.3, 0.6, 1.0))
+
 #: The specification of a change in slope: as large as an exponent may be, in either direction.
 #: Seeded at no change, a moderate one and a pronounced one each way.
 SLOPE_CHANGE_SPEC = NonlinearSpec(-MAX_EXPONENT, MAX_EXPONENT, (-1.0, -0.3, 0.0, 0.3, 1.0))
@@ -830,6 +834,122 @@ class _KaplanJointPower:
         return values
 
 
+class _SkalingJointPower:
+    """``f(N, D) = E + A * (N ** -alpha + R * D ** -beta) ** k``.
+
+    The **Skaling** law of Videau, Youbi-Idrissi, Lopez-Paz & Ahuja (2026), *Skaling: Chinchilla's
+    Exponents Meet Kaplan's Coupling* (arXiv:2608.07222), ``L = (A' / N ** alpha + B' / D ** beta) ** k
+    + E``, rewritten so that the fitter's linear block is visible: pulling ``A'`` out of the bracket
+    leaves the amplitude ``A = A' ** k`` and the ratio ``R = B' / A'``. Their ``A'`` is therefore
+    ``A ** (1 / k)`` and their ``B'`` is ``R * A ** (1 / k)``.
+
+    It is Chinchilla's separable law with one *coupling exponent* ``k`` applied to the sum of its two
+    power terms. At ``k = 1`` it is exactly ``separable-power``. With the data exponent inside the
+    bracket fixed at one it is ``kaplan-joint-power``, which is the special case that ties the inner
+    exponents together. Its mixed derivative in ``log N`` and ``log D`` has the sign of ``k * (k - 1)``:
+    for ``0 < k < 1`` each resource makes the other more valuable -- the negative interaction the
+    authors measured on large language-model grids, with ``k`` between about 0.3 and 0.9 -- while the
+    loss still falls monotonically in both. With ample data the law is a power law in model size with
+    exponent ``alpha * k``; with an ample model, a power law in data with exponent ``beta * k``.
+
+    **What it costs.** One parameter more than the separable law. ``k`` is identified by how the two
+    terms bend into each other where neither dominates -- at the edges of a grid only the products
+    ``alpha * k`` and ``beta * k`` are seen -- so the paper fit 117 to 404 runs per grid. Simulated
+    3x3 grids with two runs per configuration were enough here: ``k`` came back within about 0.01 of
+    the truth at 0.5 and 0.8, and nominal 95% prediction intervals covered 88-100%. On data with no
+    coupling the fit puts ``k`` at one -- ``separable-power``, reached as an interior point rather than
+    a bound -- and raises no warning, which is the honest answer and not a failure to identify.
+
+    It takes exactly one model-size and one dataset-size predictor, as in the paper. With one
+    predictor the bracket collapses to ``A * N ** -(alpha * k)`` and ``k`` would not be identified at
+    all.
+    """
+
+    name: ClassVar[str] = "skaling-joint-power"
+    description: ClassVar[str] = (
+        "E + A * (N**-alpha + R * D**-beta)**k (Videau et al. Skaling law: coupled model/data terms)"
+    )
+
+    @staticmethod
+    def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
+        """Construct the :class:`LawInstance` for these predictors."""
+        if len(model_size) != 1 or len(dataset_size) != 1:
+            raise LawError(
+                f"Law {_SkalingJointPower.name!r} needs exactly one model-size and one dataset-size "
+                f"predictor, got {len(model_size)} and {len(dataset_size)}"
+            )
+        return LawInstance(
+            law=_SkalingJointPower.name,
+            model_size=model_size,
+            dataset_size=dataset_size,
+            param_names=("E", "A", "alpha", "beta", "k", "R"),
+            param_kinds=(OFFSET, AMPLITUDE, EXPONENT, EXPONENT, EXPONENT, SCALE),
+            # ``k`` multiplies both slopes; as in ``kaplan-joint-power`` the outer exponent is filed
+            # under the dataset-size predictor.
+            exponent_predictor=(0, 1, 1),
+        )
+
+    @staticmethod
+    def nonlinear_specs(law: LawInstance, log_x: np.ndarray | None) -> tuple[NonlinearSpec, ...]:
+        """Two inner exponents, the coupling exponent, and the ratio between the two terms.
+
+        The coupling exponent gets three seeds rather than the usual six, spread over the range the paper
+        measured and the separable value of one; the inner exponents and the ratio keep the usual grids.
+        """
+        return (EXPONENT_SPEC, EXPONENT_SPEC, COUPLING_SPEC, SCALE_SPEC)
+
+    min_levels = staticmethod(_three_levels)
+
+    @staticmethod
+    def _bracket(nonlinear: np.ndarray, log_x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The model term, the data term, and the bracket ``N**-alpha + R * D**-beta``."""
+        model_term = np.exp(-nonlinear[..., 0, None] * log_x[:, 0])
+        data_term = np.exp(-nonlinear[..., 1, None] * log_x[:, 1])
+        return model_term, data_term, model_term + nonlinear[..., 3, None] * data_term
+
+    @staticmethod
+    def design(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Columns ``[1, (N**-alpha + R * D**-beta)**k]``."""
+        _, _, bracket = _SkalingJointPower._bracket(nonlinear, log_x)
+        out = np.empty((log_x.shape[0], 2), dtype=float)
+        out[:, 0] = 1.0
+        out[:, 1] = bracket ** nonlinear[2]
+        return out
+
+    @staticmethod
+    def many_designs(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Design matrices for many nonlinear vectors at once, shape ``(n_draws, n_points, 2)``."""
+        _, _, bracket = _SkalingJointPower._bracket(nonlinear, log_x)
+        out = np.empty((nonlinear.shape[0], log_x.shape[0], 2), dtype=float)
+        out[:, :, 0] = 1.0
+        out[:, :, 1] = bracket ** nonlinear[:, 2, None]
+        return out
+
+    @staticmethod
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    ) -> np.ndarray:
+        """With bracket ``g``: ``d/d alpha = -A k g**(k-1) N**-alpha log N``, ``d/d k = A g**k log g``."""
+        model_term, data_term, bracket = _SkalingJointPower._bracket(nonlinear, log_x)
+        value = linear[1] * design[:, 1]
+        slope = value * nonlinear[2] / bracket
+        grad = np.empty((log_x.shape[0], 4), dtype=float)
+        grad[:, 0] = -slope * model_term * log_x[:, 0]
+        grad[:, 1] = -slope * nonlinear[3] * data_term * log_x[:, 1]
+        grad[:, 2] = value * np.log(bracket)
+        grad[:, 3] = slope * data_term
+        return grad
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        """Pull ``N_ref**alpha`` out of the bracket: it rescales ``A`` by its ``k`` power, and ``R``."""
+        values = _values(law, params)
+        _, _, alpha, beta, k, _ = params
+        values["A"] *= float(reference[0] ** (alpha * k))
+        values["R"] *= float(reference[1] ** beta / reference[0] ** alpha)
+        return values
+
+
 class _BoundedRationalPower:
     """``f(x) = (E + I * g(x)) / (1 + g(x))`` with ``g(x) = sum_i A_i * x_i ** -alpha_i``.
 
@@ -1093,6 +1213,7 @@ _LAWS: dict[str, Any] = {
         _SeparableInteractionPower,
         _ShiftedSeparablePower,
         _KaplanJointPower,
+        _SkalingJointPower,
         _BoundedRationalPower,
         _BrokenPower,
     )
@@ -1121,6 +1242,8 @@ def available_laws() -> dict[str, str]:
         shifted-separable-power: E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite
         small-scale limit)
         kaplan-joint-power: E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
+        skaling-joint-power: E + A * (N**-alpha + R * D**-beta)**k (Videau et al. Skaling law: coupled
+        model/data terms)
         bounded-rational-power: (E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small
         scale, floor E at large)
         broken-power: E + A * x**-c0 * (1 + (x / d)**(1 / f))**(-c1 * f) (one smooth change of slope;
@@ -1163,7 +1286,7 @@ def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) 
         ...
         simple_scaling_laws.laws.LawError: Unknown law 'no-such-law'; available: separable-power,
         multiplicative-power, separable-interaction-power, shifted-separable-power, kaplan-joint-power,
-        bounded-rational-power, broken-power
+        skaling-joint-power, bounded-rational-power, broken-power
 
         Some laws are defined only for a particular set of predictors, and say so:
 

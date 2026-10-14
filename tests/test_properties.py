@@ -36,7 +36,7 @@ exponents = st.floats(min_value=0.0, max_value=MAX_EXPONENT, allow_nan=False, al
 
 def _law(name, n_model, n_dataset):
     """Build a law over synthetic predictor names, honoring any law-specific arity."""
-    if name == "kaplan-joint-power":
+    if name in ("kaplan-joint-power", "skaling-joint-power"):
         n_model, n_dataset = 1, 1
     if name == "broken-power":
         n_model, n_dataset = 1, 0
