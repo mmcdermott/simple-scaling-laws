@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy import stats
 
-from .laws import EXPONENT
+from .laws import EXPONENT_KINDS
 from .notes import Note
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -369,7 +369,7 @@ def fit_notes(
 
     lower, upper = uncertainty.quantiles([0.025, 0.975])
     for i, (name, kind) in enumerate(zip(law.param_names, law.param_kinds, strict=True)):
-        if kind != EXPONENT:
+        if kind not in EXPONENT_KINDS:
             continue
         width = float(upper[i] - lower[i])
         estimate = float(fit.params[i])

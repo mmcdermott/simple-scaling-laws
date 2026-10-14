@@ -18,6 +18,14 @@ Signs are drawn once per **configuration** and shared by every run at that confi
 part of a residual that is common to a scale -- the local lack of fit -- is preserved rather than
 averaged away.
 
+Each configuration's pseudo-residual is **floored at the noise the fit absorbed there**. A law with
+nearly as many parameters as configurations passes almost exactly through some of them, so their
+residuals are close to zero whatever the noise was, and resampling them perturbs nothing -- least of
+all the points a nonlinear parameter such as a break location rests on. The run-to-run and evaluation
+variances are estimated separately, so the share a configuration's leverage absorbed is known, and the
+floor puts it back. It only ever widens an interval; see :func:`corrected_residuals` for what it
+measured.
+
 When the fit has no residual degrees of freedom left, no wild bootstrap is possible; the package
 falls back to a parametric bootstrap from the estimated variance components and says so in a note.
 
@@ -146,8 +154,28 @@ def cluster_correction(n_clusters: int, n_params: int) -> float:
         3.213
     """
     degrees_of_freedom = float(np.sqrt(n_clusters / max(n_clusters - n_params, 1)))
-    tail = float(stats.t.ppf(0.975, max(n_clusters - 1, 1)) / stats.norm.ppf(0.975))
-    return degrees_of_freedom * tail
+    return degrees_of_freedom * tail_correction(n_clusters)
+
+
+def tail_correction(n_clusters: int) -> float:
+    """Ratio of Student's t on ``n_clusters - 1`` degrees of freedom to the normal, at 97.5%.
+
+    The second factor of :func:`cluster_correction`, also used on its own to scale the noise floor in
+    :func:`corrected_residuals`.
+
+    Args:
+        n_clusters: Number of resampling clusters.
+
+    Returns:
+        A factor of at least one, approaching one as clusters accumulate.
+
+    Examples:
+        >>> round(tail_correction(9), 3)
+        1.177
+        >>> round(tail_correction(1000), 3)
+        1.001
+    """
+    return float(stats.t.ppf(0.975, max(n_clusters - 1, 1)) / stats.norm.ppf(0.975))
 
 
 def corrected_residuals(
@@ -156,16 +184,35 @@ def corrected_residuals(
     log_x: np.ndarray,
     y: np.ndarray,
     weights: np.ndarray,
-    n_clusters: int | None = None,
+    clusters: np.ndarray | None = None,
+    noise_var: np.ndarray | None = None,
 ) -> np.ndarray:
     """Residuals inflated to undo the shrinkage caused by fitting.
 
-    Two corrections are applied. Least squares pulls the curve toward each observation, so raw
-    residuals are systematically smaller than the errors they estimate; dividing by
-    ``sqrt(1 - h_r)`` restores the per-observation scale (the HC2 correction). Then
-    :func:`cluster_correction` accounts for the degrees of freedom the fit consumed at the level the
-    bootstrap actually resamples at. Resampling uncorrected residuals gives intervals that are
-    demonstrably far too narrow at the sample sizes this package targets.
+    Least squares pulls the curve toward each observation, so raw residuals are systematically
+    smaller than the errors they estimate; dividing by ``sqrt(1 - h_r)`` restores the
+    per-observation scale (the HC2 correction). Then :func:`cluster_correction` accounts for the
+    degrees of freedom the fit consumed at the level the bootstrap actually resamples at. Resampling
+    uncorrected residuals gives intervals that are demonstrably far too narrow at the sample sizes
+    this package targets.
+
+    Both are *average* corrections, and they fail where leverage is uneven. A configuration with
+    cluster leverage ``H_c`` near one keeps only ``1 - H_c`` of its noise in its residual, and no
+    rescaling of a residual near zero recovers it. So, when the noise variance is supplied, each
+    configuration's mean pseudo-residual is also floored at ``tail * sqrt(H_c * v_c)``, where
+    ``v_c`` is the variance of that configuration's weighted mean and ``tail`` is
+    :func:`tail_correction`: the share of its noise the fit absorbed, which its residual cannot
+    show. Within-configuration deviations are left as they are.
+
+    The floor is measured, not assumed. On the ``broken-power`` law -- six parameters on eight or
+    twelve scales -- nominal 95% prediction intervals covered the truth 70-88% of the time without
+    it and 90-97% with it (60 replications per design, three points inside and beyond the sweep).
+    On the other laws' recommended designs, which already covered 82-98%, it moved coverage to
+    93-98% and widened median intervals by at most about 15%. Under a misspecified law it changed
+    nothing measurable, because there the residuals are already larger than the floor. A purely
+    additive correction, ``m_c**2 + H_c * v_c`` in place of both average factors, calibrated as well
+    with narrower intervals when the law was right, but lost half its coverage of the true curve
+    under misspecification, which is why the floor is a maximum rather than a replacement.
 
     Args:
         law: The instantiated law.
@@ -173,16 +220,45 @@ def corrected_residuals(
         log_x: Log-normalized predictors, one row per run.
         y: Run-level means.
         weights: Fitting weights.
-        n_clusters: Number of resampling clusters. Defaults to one per observation.
+        clusters: Resampling cluster (configuration) of each run. Defaults to one per observation.
+        noise_var: Variance of each run mean, run-to-run plus evaluation. Without it, no floor is
+            applied.
 
     Returns:
         Corrected residuals, one per run.
+
+    Examples:
+        A sweep that the law passes through exactly has nothing left to resample, unless the noise
+        it absorbed is put back:
+
+        >>> from .laws import build_law
+        >>> law = build_law("separable-power", ("model_size__n",), ())
+        >>> params = np.array([1.0, 2.0, 0.3])
+        >>> log_x = np.log(np.array([[0.1], [1.0], [10.0], [100.0]]))
+        >>> exact = law.evaluate(params, log_x)
+        >>> corrected_residuals(law, params, log_x, exact, np.ones(4))
+        array([0., 0., 0., 0.])
+        >>> noise_var = np.full(4, 1e-4)
+        >>> floored = corrected_residuals(law, params, log_x, exact, np.ones(4), np.arange(4), noise_var)
+        >>> bool(np.all(floored > 0))
+        True
     """
     residual = y - law.evaluate(params, log_x)
+    absorbed = leverage(law, params, log_x, weights)
     ceiling = 1.0 - MAX_LEVERAGE_HEADROOM / max(y.size, MAX_LEVERAGE_HEADROOM + 1.0)
-    h = np.clip(leverage(law, params, log_x, weights), 0.0, ceiling)
-    clusters = y.size if n_clusters is None else n_clusters
-    return residual / np.sqrt(1.0 - h) * cluster_correction(clusters, law.n_params)
+    cluster = np.arange(y.size) if clusters is None else np.unique(clusters, return_inverse=True)[1]
+    n_clusters = int(cluster.max()) + 1
+    corrected = residual / np.sqrt(1.0 - np.clip(absorbed, 0.0, ceiling))
+    corrected *= cluster_correction(n_clusters, law.n_params)
+    if noise_var is None:
+        return corrected
+
+    total = np.bincount(cluster, weights)
+    mean = np.bincount(cluster, weights * corrected) / total
+    mean_var = np.bincount(cluster, weights**2 * noise_var) / total**2
+    floor = np.sqrt(np.minimum(np.bincount(cluster, absorbed), 1.0) * mean_var) * tail_correction(n_clusters)
+    floored = np.copysign(np.maximum(np.abs(mean), floor), mean)
+    return corrected + (floored - mean)[cluster]
 
 
 def _refit(
@@ -340,7 +416,7 @@ def bootstrap(
     clusters, cluster_of_run = np.unique(config_index, return_inverse=True)
     residual_dof = y.size - law.n_params
     pseudo = (
-        corrected_residuals(law, params, log_x, y, weights, n_clusters=clusters.size)
+        corrected_residuals(law, params, log_x, y, weights, config_index, run_sd**2 + per_run_var)
         if residual_dof > 0
         else np.zeros(0)
     )

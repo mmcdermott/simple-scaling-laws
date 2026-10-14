@@ -57,7 +57,9 @@ def simulate_runs(
             confined to ``[0, 1]``, such as ``test_metric__auroc``, these are parameters of the law
             **on the logit scale**, which is where the package models such metrics.
         model_sizes: Raw model-size values; crossed with ``dataset_sizes`` to form configurations.
-        dataset_sizes: Raw dataset-size values.
+        dataset_sizes: Raw dataset-size values. Pass an empty sequence for an experiment that varies
+            model size alone, which is what a single-predictor law such as ``broken-power`` needs;
+            the dataset-size column is then left out of the table altogether.
         law: Name of the generating law.
         runs_per_config: Independently trained models per configuration.
         evaluations_per_run: Evaluation resamples scored for each trained model.
@@ -112,11 +114,25 @@ def simulate_runs(
         ... )
         >>> exact["test_loss__ce"].to_list()
         [4.0]
+
+        A sweep over model size alone has no dataset-size column:
+
+        >>> sweep = simulate_runs(
+        ...     {"test_loss__ce": {"E": 1.0, "A": 3.0, "alpha": 0.5}},
+        ...     model_sizes=(1e6, 1e7, 1e8),
+        ...     dataset_sizes=(),
+        ...     runs_per_config=1,
+        ...     evaluations_per_run=1,
+        ... )
+        >>> [c for c in sweep.columns if "size" in c], sweep.height
+        (['model_size__n_params'], 3)
     """
     targets = list(params)
     run_sds = _per_target(run_sd, targets)
     eval_sds = _per_target(eval_sd, targets)
     model_sizes, dataset_sizes = tuple(model_sizes), tuple(dataset_sizes)
+    axes = [model_sizes, dataset_sizes] if dataset_sizes else [model_sizes]
+    predictors = tuple(predictors[: len(axes)])
     instance = build_law(law, predictors[:1], predictors[1:])
 
     vectors: dict[str, np.ndarray] = {}
@@ -129,7 +145,7 @@ def simulate_runs(
     # Independent streams, so that changing the number of evaluation resamples does not also change
     # the realized training-run offsets. That keeps two designs genuinely comparable.
     shared_rng, run_rng, eval_rng = np.random.default_rng(seed).spawn(3)
-    configs = list(itertools.product(model_sizes, dataset_sizes))
+    configs = list(itertools.product(*axes))
     reference = np.exp(np.log(np.array(configs, dtype=float)).mean(axis=0))
     shared = {
         target: shared_rng.normal(0.0, eval_sds[target] * np.sqrt(shared_eval_fraction), evaluations_per_run)
@@ -151,8 +167,8 @@ def simulate_runs(
     for target in targets:
         rows[target] = []
 
-    for config_i, (model_size, dataset_size) in enumerate(configs):
-        log_x = np.log(np.array([[model_size, dataset_size]], dtype=float)) - np.log(reference)
+    for config_i, config in enumerate(configs):
+        log_x = np.log(np.array([config], dtype=float)) - np.log(reference)
         truth = {t: float(instance.evaluate(vectors[t], log_x)[0]) for t in targets}
         for replicate in range(runs_per_config):
             run_id = f"run_{config_i:03d}_{replicate:02d}"
@@ -165,8 +181,8 @@ def simulate_runs(
                 rows["train_set_id"].append(f"train_{config_i:03d}")
                 rows["test_set_id"].append(test_set_id)
                 rows["optimizer_seed"].append(replicate)
-                rows[predictors[0]].append(model_size)
-                rows[predictors[1]].append(dataset_size)
+                for name, value in zip(predictors, config, strict=True):
+                    rows[name].append(value)
                 for target in targets:
                     idiosyncratic = eval_sds[target] * np.sqrt(1.0 - shared_eval_fraction)
                     noise = eval_rng.normal(0.0, idiosyncratic) if idiosyncratic > 0 else 0.0

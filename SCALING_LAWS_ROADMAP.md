@@ -2,9 +2,34 @@
 
 This document describes proposed extensions to `simple-scaling-laws` for model/data interactions, very-small-data regimes, finite-data saturation, and non-monotonic scaling. It complements issue #7.
 
+## Status
+
+Sections 1-5 below are implemented, and the README documents each law. What follows is kept as the
+design record; where the implementation went a different way, this is how:
+
+| Proposal                             | Outcome                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------ |
+| 1. Interaction law                   | `separable-interaction-power`, any number of predictors                  |
+| 2. Kaplan-style joint scaling        | `kaplan-joint-power`, with `rho = alpha_N / alpha_D`                     |
+| 3. Shifted power (Zhai et al.)       | `shifted-separable-power`; needs four levels per predictor               |
+| 4. M4 / bounded small-data scaling   | `bounded-rational-power`, shape exponent fixed at 1 only                 |
+| 5. Broken Neural Scaling Laws        | `broken-power`, one break, one predictor                                 |
+| Internal refactor (`ParameterSpec`)  | `LawInstance.nonlinear_specs`: per-parameter bounds and seeds, law-owned |
+| Raw-scale conversion behind the law  | `LawInstance.raw_scale_params`                                           |
+| Diagnostics for weak identifiability | `ill_conditioned_fit`; law-specific `too_few_predictor_levels`           |
+
+Still open:
+
+- **Full M4** with a fitted shape exponent. It has no closed form, so it cannot use the exact linear solve
+    that every current law relies on.
+- **An explicit small-scale limit.** `bounded-rational-power` estimates its plateau `I` from the
+    data. Section 4's suggestion of letting a target declare it (chance level for AUROC, say) would
+    make the law usable on experiments that do not reach far enough down to see the bend.
+- **A broken law in a model/data capacity ratio** (the end of section 5), and more than one break.
+
 ## Current laws
 
-The package currently supports:
+When this roadmap was written the package supported:
 
 - `separable-power`: `E + sum_i A_i x_i^-alpha_i`.
 - `multiplicative-power`: `E + A prod_i x_i^-alpha_i`.

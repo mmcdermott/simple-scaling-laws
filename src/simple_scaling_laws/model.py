@@ -11,7 +11,7 @@ import polars as pl
 
 from . import artifact as artifact_io
 from .data import DataError, read_table
-from .laws import EXPONENT, LawInstance
+from .laws import EXPONENT_KINDS, LawInstance
 from .metrics import MetricKind, from_fitting_scale, scale_description
 from .notes import Note
 from .schema import Schema
@@ -338,13 +338,13 @@ class ScalingLawModel:
         return {name: by_name[name] for name in self._law.display_names}
 
     def exponents(self, target: str) -> dict[str, float]:
-        """The scaling exponents of one target's fitted law."""
+        """The scaling exponents of one target's fitted law: every parameter that is a log-log slope."""
         return {
             name: float(value)
             for name, kind, value in zip(
                 self._law.param_names, self._law.param_kinds, self._fit(target).params, strict=True
             )
-            if kind == EXPONENT
+            if kind in EXPONENT_KINDS
         }
 
     def metric_correlations(self) -> pl.DataFrame:

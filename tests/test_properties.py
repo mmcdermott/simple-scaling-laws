@@ -18,6 +18,7 @@ from simple_scaling_laws.fitting import (
     MAX_WEIGHT_RATIO,
     Bounds,
     compute_weights,
+    constant_fit,
     is_constant,
     parameter_bounds,
     replicate_run_variance,
@@ -37,6 +38,8 @@ def _law(name, n_model, n_dataset):
     """Build a law over synthetic predictor names, honoring any law-specific arity."""
     if name == "kaplan-joint-power":
         n_model, n_dataset = 1, 1
+    if name == "broken-power":
+        n_model, n_dataset = 1, 0
     return build_law(
         name,
         [f"model_size__m{i}" for i in range(n_model)],
@@ -128,8 +131,9 @@ def test_parameter_bounds_are_ordered_and_contain_a_sensible_point(values, signe
     bounds = parameter_bounds(law, y, signed_amplitude=signed)
     assert np.all(bounds.lower <= bounds.upper)
     assert np.all(np.isfinite(bounds.lower)) and np.all(np.isfinite(bounds.upper))
-    constant = np.zeros(law.n_params)
-    constant[0] = float(np.mean(y))
+    # Not simply zeros: a law may have a parameter, such as a break scale, that cannot be zero.
+    constant = constant_fit(law, y).params
+    assert constant[0] == float(np.mean(y))
     assert np.allclose(bounds.clip(constant), constant)
 
 

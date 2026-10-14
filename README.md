@@ -84,9 +84,9 @@ Prediction returns a dataframe, so plotting is whatever you already use:
 ...         f"[{row['test_loss__cross_entropy__q025']:.3f}, "
 ...         f"{row['test_loss__cross_entropy__q975']:.3f}]"
 ...     )
-current    interpolation  2.856 [2.837, 2.879]
-10x-model  extrapolation  2.367 [2.324, 2.412]
-10x-data   extrapolation  2.488 [2.457, 2.528]
+current    interpolation  2.856 [2.838, 2.878]
+10x-model  extrapolation  2.367 [2.323, 2.413]
+10x-data   extrapolation  2.487 [2.456, 2.530]
 
 ```
 
@@ -147,9 +147,9 @@ columns:
 
 ## What it fits
 
-Six law families. Each is linear in its offset and amplitudes, which are solved exactly, and
-nonlinear in a handful of other parameters -- exponents, and for the richer laws a shift or a ratio --
-which are searched:
+Seven law families. Each is linear in its offset and amplitudes, which are solved exactly, and
+nonlinear in a handful of other parameters -- exponents, and for the richer laws a shift, a ratio or
+a break -- which are searched:
 
 ```pycon
 >>> from simple_scaling_laws import available_laws
@@ -167,6 +167,8 @@ kaplan-joint-power
     E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
 bounded-rational-power
     (E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small scale, floor E at large)
+broken-power
+    E + A * x**-c0 * (1 + (x / d)**(1 / f))**(-c1 * f) (one smooth change of slope; single predictor)
 
 ```
 
@@ -304,7 +306,7 @@ its interval does not reach the truth; the shifted law's does:
 ...         f"[{row['test_loss__cross_entropy__q025']:.2f}, {row['test_loss__cross_entropy__q975']:.2f}]"
 ...     )
 plain     -1.33 [-2.18, -0.27]
-shifted    1.10 [1.06, 1.14]
+shifted    1.10 [1.05, 1.15]
 
 ```
 
@@ -346,7 +348,7 @@ power law in model size (exponent `ρ·β`), with an ample model it is a power l
 >>> losses[:6]  # scarce data: a hundred thousand times the model buys almost nothing
 [18.53, 17.42, 17.06, 16.94, 16.91, 16.89]
 >>> losses[6:]  # ample data: the model is the bottleneck, and scaling it pays
-[6.65, 3.86, 2.47, 1.79, 1.47, 1.33]
+[6.65, 3.86, 2.47, 1.79, 1.47, 1.34]
 
 ```
 
@@ -356,7 +358,8 @@ column, and both must actually vary.
 
 Measured on 4x4 designs, the nominal 95% prediction intervals of both laws covered the truth
 88-100% of the time, inside the grid and a decade beyond it. On a 3x3 grid with two runs per
-configuration the Kaplan law's dropped to 78-85%, so prefer the larger grid.
+configuration the Kaplan law's covered 93-95%, but only because the bootstrap puts back noise that
+a fit this close to saturated absorbs (78-85% without it); prefer the larger grid.
 
 ### When the experiment reaches down to chance
 
@@ -399,7 +402,7 @@ to stop it:
 ...         f"{name:<10} {row['test_loss__cross_entropy__median']:5.2f} "
 ...         f"[{row['test_loss__cross_entropy__q025']:.2f}, {row['test_loss__cross_entropy__q975']:.2f}]"
 ...     )
-bounded     3.99 [3.96, 4.01]
+bounded     3.99 [3.95, 4.03]
 separable   8.14 [5.06, 144.22]
 
 ```
@@ -409,7 +412,64 @@ toward it. On data that are still a clean power law `I` runs off to its bound wh
 shrink to compensate, and the fit is reported as `ill_conditioned_fit`: use `separable-power`. Both
 limits are estimated, never assumed; for a metric confined to `[0, 1]` they are limits on the logit
 scale the metric is fit on. Its intervals covered the truth 82-98% of the time on 4x4 designs and
-75-82% on a 3x3 grid with two runs per configuration, so this law too wants the larger grid.
+97-98% on a 3x3 grid with two runs per configuration -- there only because the bootstrap puts back
+noise the fit absorbed (75-82% without it), so this law too wants the larger grid.
+
+### When the slope changes partway
+
+Every law above has one slope on log-log axes. `broken-power` has two, joined smoothly at a break
+scale `d`: `E + A·x^-c0·(1 + (x/d)^(1/f))^(-c1·f)`, the one-break Broken Neural Scaling Law of
+Caballero et al. (2022). Below the break the excess loss falls as `x^-c0`, above it as
+`x^-(c0+c1)`, and `c1` may have either sign -- so the curve can steepen, flatten, or, when
+`c1 < -c0`, turn back up. It is a law for a sweep along **one** predictor:
+
+```pycon
+>>> truth = {"E": 1.0, "A": 2.0, "c0": 0.3, "c1": -0.6, "d": 3.0, "f": 0.8}
+>>> sizes = tuple(10.0**k for k in range(6, 14))
+>>> sweep = simulate_runs(
+...     {"test_loss__cross_entropy": truth},
+...     model_sizes=sizes,
+...     dataset_sizes=(),
+...     law="broken-power",
+...     runs_per_config=2,
+...     evaluations_per_run=4,
+...     run_sd=0.01,
+...     eval_sd=0.02,
+...     seed=0,
+... )
+>>> broken = fit(sweep, law="broken-power", n_draws=200, seed=0)
+>>> {k: round(v, 2) for k, v in broken.params("test_loss__cross_entropy").items()}
+{'E': 0.99, 'A': 2.0, 'c0': 0.3, 'c1': -0.6, 'd': 2.98, 'f': 0.8}
+>>> at_sizes = {"model_size__n_params": list(sizes)}
+>>> [round(v, 1) for v in broken.predict(at_sizes)["test_loss__cross_entropy__median"]]
+[23.4, 12.2, 6.6, 3.9, 3.0, 4.0, 6.8, 12.6]
+
+```
+
+A single power law cannot turn, so on the same runs it settles for a floor through the middle of
+them, and says the fit is poor:
+
+```pycon
+>>> single = fit(sweep, n_draws=200, seed=0)
+>>> [round(v, 1) for v in single.predict(at_sizes)["test_loss__cross_entropy__median"]]
+[23.3, 11.8, 8.6, 7.3, 6.8, 6.2, 6.2, 6.2]
+>>> "lack_of_fit" in [note.code for note in single.warnings]
+True
+
+```
+
+Three things to know before using it:
+
+- **It needs at least six scales of its predictor** -- it has six parameters on one axis -- and
+    raises `too_few_predictor_levels` otherwise.
+- **The break can only be found inside the range that was run.** A break estimated at either end of
+    it is reported as `parameter_at_bound`, and means no break was observed. An extrapolation simply
+    continues the upper slope; it cannot anticipate another change of regime beyond the grid.
+- **Its intervals rely on knowing the noise.** With six parameters on eight scales the fit passes
+    almost exactly through some of them, and the bootstrap puts back the noise the fit absorbed there
+    from the separately estimated run and evaluation variances. With that, nominal 95% prediction
+    intervals covered 90-97% in simulation; without it they covered 70-88%. Replicate runs at a few
+    scales make that noise estimate direct rather than inferred from the residuals.
 
 ## Bounded metrics
 
@@ -515,11 +575,11 @@ scaling-laws compare points.parquet \
 ...         f"better than baseline {row['p_better_than_reference']:>4.0%}"
 ...     )
 10x  baseline  2.352  best   0%  better than baseline   0%
-10x  risky     2.382  best   0%  better than baseline  28%
-10x  tuned     2.245  best 100%  better than baseline 100%
-now  baseline  2.849  best   0%  better than baseline   0%
-now  risky     2.890  best   0%  better than baseline   2%
-now  tuned     2.746  best 100%  better than baseline 100%
+10x  risky     2.382  best   0%  better than baseline  29%
+10x  tuned     2.244  best 100%  better than baseline 100%
+now  baseline  2.848  best   0%  better than baseline   0%
+now  risky     2.891  best   0%  better than baseline   3%
+now  tuned     2.747  best 100%  better than baseline 100%
 
 ```
 
@@ -590,7 +650,13 @@ counting how often the nominal 95% intervals contained it gave **74%** at nine c
 **87%** at sixteen. Two corrections fix it -- a degrees-of-freedom factor for the parameters the fit
 consumed at the level the bootstrap resamples at, and a Student's-t rather than normal reference for
 the interval endpoints -- and take measured coverage to **91-95%** across the designs this package
-targets. `tests/test_coverage.py` re-measures this on every CI run, so it cannot silently regress.
+targets. A third correction matters when a law has nearly as many parameters as configurations: the
+fit then passes almost exactly through some of them, their residuals understate the noise, and each
+configuration's pseudo-residual is floored at the share of its (separately estimated) noise that the
+fit absorbed. It only ever widens an interval. `tests/test_coverage.py` re-measures this on every CI run, so it cannot silently regress.
+
+That calibration was measured on `separable-power`. Every other law is held to the same test
+(`tests/test_law_families.py`), and its section above reports what it measured.
 
 **Correlations are computed across runs.** Loss/metric correlations use run-level means, with
 intervals from resampling configurations. The naive evaluation-row correlation is reported alongside
@@ -711,13 +777,14 @@ Detected conditions include: too few distinct configurations, fewer configuratio
 **a predictor measured at fewer than three distinct scales**, a predictor held fixed, collinear
 predictors, a single run per configuration, no repeated evaluations, optimizer non-convergence,
 parameters pinned to a bound, weakly identified exponents, parameters that trade off against each
-other without changing the curve, lack of fit, a constant target, no
+other without changing the curve, a law whose intervals are known to be too narrow, lack of fit, a constant target, no
 uncertainty information at all, and extrapolation at predict time.
 
 The three-scales rule deserves its own note, because it is the one failure widening cannot rescue.
 Restricted to a single predictor a power-law term is `E + A·x^-α`: three free parameters, so two
 scales can be fit exactly by infinitely many different curves. (A law that puts more on a predictor
-needs more scales of it, and the note says how many: four for `shifted-separable-power`.) A design with only two dataset
+needs more scales of it, and the note says how many: four for `shifted-separable-power`, six for
+`broken-power`.) A design with only two dataset
 sizes yields parameters that look plausible, intervals that look reasonable, and simulated coverage
 of **0-38%**. The package raises an `error`-severity `too_few_predictor_levels` note in **100%** of
 such fits -- it cannot give you the right answer, but it will not pretend to.

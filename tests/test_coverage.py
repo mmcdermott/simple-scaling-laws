@@ -18,8 +18,10 @@ import numpy as np
 import pytest
 
 from simple_scaling_laws import fit
+from simple_scaling_laws.fitting import fit_curve, leverage, parameter_bounds
+from simple_scaling_laws.laws import build_law
 from simple_scaling_laws.simulate import simulate_runs
-from simple_scaling_laws.uncertainty import cluster_correction
+from simple_scaling_laws.uncertainty import cluster_correction, corrected_residuals, tail_correction
 
 TRUTH = {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}
 
@@ -131,3 +133,29 @@ def test_the_calibration_factor_grows_as_the_design_thins():
     assert all(a > b for a, b in itertools.pairwise(factors))
     assert factors[-1] == pytest.approx(1.0, abs=0.05)
     assert all(f >= 1.0 for f in factors)
+
+
+def test_a_configuration_the_fit_absorbs_still_carries_its_noise():
+    """A near-saturated configuration's pseudo-residual is floored at the noise the fit absorbed.
+
+    Six parameters on eight scales leave several configurations with leverage near one. Their residuals are
+    then close to zero whatever the noise was, so without a floor the bootstrap barely perturbs them -- and
+    those are exactly the points that place the break. Before the floor, nominal 95% intervals for the broken
+    law covered 60-88%.
+    """
+    law = build_law("broken-power", ("model_size__n",), ())
+    truth = np.array([1.0, 2.0, 0.15, 0.5, 1.0, 1.0])
+    log_x = np.linspace(-6.0, 6.0, 8)[:, None]
+    rng = np.random.default_rng(0)
+    y = law.evaluate(truth, log_x) + rng.normal(0.0, 0.02, 8)
+    weights = np.ones(8)
+    fitted = fit_curve(law, log_x, y, weights, parameter_bounds(law, y, False, log_x)).params
+    clusters, noise_var = np.arange(8), np.full(8, 0.02**2)
+
+    floored = corrected_residuals(law, fitted, log_x, y, weights, clusters, noise_var)
+    unfloored = corrected_residuals(law, fitted, log_x, y, weights, clusters, np.zeros(8))
+    floor = np.sqrt(leverage(law, fitted, log_x, weights) * noise_var) * tail_correction(8)
+
+    assert np.all(np.abs(floored) >= floor - 1e-12)
+    assert np.all(np.abs(floored) >= np.abs(unfloored) - 1e-12), "the floor may only widen"
+    assert np.any(np.abs(unfloored) < floor), "this design should have a configuration below its floor"

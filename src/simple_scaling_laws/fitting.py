@@ -391,6 +391,10 @@ def is_constant(y: np.ndarray) -> bool:
 def constant_fit(law: LawInstance, y: np.ndarray) -> CurveFit:
     """The exact fit for a target with no variation: the offset alone, every other term zero.
 
+    The nonlinear parameters multiply a zero amplitude, so their values change nothing. They are set
+    to zero where the law allows it and to the nearest allowed value where it does not -- a break
+    scale cannot be zero -- so that the vector can still be evaluated.
+
     Args:
         law: The instantiated law.
         y: Observed values.
@@ -403,9 +407,14 @@ def constant_fit(law: LawInstance, y: np.ndarray) -> CurveFit:
         >>> law = build_law("separable-power", ["model_size__n"], ["dataset_size__d"])
         >>> constant_fit(law, np.array([0.8, 0.8])).params
         array([0.8, 0. , 0. , 0. , 0. ])
+        >>> broken = constant_fit(build_law("broken-power", ["model_size__n"], []), np.array([0.8, 0.8]))
+        >>> broken.params.round(3)
+        array([0.8  , 0.   , 0.   , 0.   , 0.1  , 0.046])
     """
     params = np.zeros(law.n_params, dtype=float)
     params[0] = float(np.mean(y))
+    specs = law.nonlinear_specs()
+    params[law.n_linear :] = np.clip(0.0, [spec.lower for spec in specs], [spec.upper for spec in specs])
     return CurveFit(
         params=params,
         cost=0.0,

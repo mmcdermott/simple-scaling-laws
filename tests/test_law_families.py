@@ -9,6 +9,7 @@ to :data:`CASES`.
 """
 
 import dataclasses
+import itertools
 import warnings
 
 import numpy as np
@@ -29,6 +30,9 @@ SEPARABLE_TRUTH = {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}
 N_REPLICATIONS = 15
 N_DRAWS = 120
 
+#: Floors on mean and worst-point prediction-interval coverage, those of ``test_coverage.py``.
+MEAN_COVERAGE, MIN_COVERAGE = 0.88, 0.8
+
 
 @dataclasses.dataclass(frozen=True)
 class Case:
@@ -38,6 +42,8 @@ class Case:
     levels: int
     #: Laws this one reduces to exactly at some parameter value, so can be over-fit to.
     contains_separable: bool = False
+    #: Whether the law is defined over model size alone, so the experiment is a sweep, not a grid.
+    single_predictor: bool = False
 
     @property
     def model_sizes(self):
@@ -45,16 +51,29 @@ class Case:
 
     @property
     def dataset_sizes(self):
-        return tuple(10.0 ** (3 + i) for i in range(self.levels))
+        return () if self.single_predictor else tuple(10.0 ** (3 + i) for i in range(self.levels))
+
+    @property
+    def predictors(self):
+        both = (["model_size__n_params"], ["dataset_size__n_subjects"])
+        return (both[0], []) if self.single_predictor else both
 
     @property
     def points(self):
         """An interior point, then a decade beyond the grid in model size, in data, and in both."""
-        big_model, big_data = self.model_sizes[-1] * 10, self.dataset_sizes[-1] * 10
+        big_model = self.model_sizes[-1] * 10
+        if self.single_predictor:
+            return {"model_size__n_params": [3e7, 3e10, big_model]}
+        big_data = self.dataset_sizes[-1] * 10
         return {
             "model_size__n_params": [3e7, big_model, 1e7, big_model],
             "dataset_size__n_subjects": [3e4, 1e4, big_data, big_data],
         }
+
+    @property
+    def separable_truth(self):
+        """A separable law over the same predictors, for over-fitting this one to."""
+        return {"E": 1.0, "A": 2.0, "alpha": 0.3} if self.single_predictor else SEPARABLE_TRUTH
 
 
 CASES = {
@@ -75,6 +94,14 @@ CASES = {
         {"E": 1.0, "I": 4.0, "A": 1.0, "B": 0.8, "alpha": 0.5, "beta": 0.4},
         levels=4,
         contains_separable=True,
+    ),
+    # Eight scales for six parameters on one axis: the design on which the bootstrap needed its
+    # noise floor (see ``uncertainty.corrected_residuals``) to stop under-covering.
+    "broken-power": Case(
+        {"E": 1.0, "A": 2.0, "c0": 0.15, "c1": 0.5, "d": 1.0, "f": 1.0},
+        levels=8,
+        contains_separable=True,
+        single_predictor=True,
     ),
 }
 NESTING = sorted(name for name, case in CASES.items() if case.contains_separable)
@@ -133,7 +160,7 @@ def test_prediction_intervals_are_calibrated(law):
     -- and none may be systematically too narrow. The floors are those of ``test_coverage.py``.
     """
     case = CASES[law]
-    hits = np.zeros(4)
+    hits = np.zeros(len(case.points["model_size__n_params"]))
     for seed in range(N_REPLICATIONS):
         model = fit(_simulate(case, law, seed=seed), law=law, n_draws=N_DRAWS, seed=seed)
         predictions = _predict(model, case)
@@ -142,8 +169,8 @@ def test_prediction_intervals_are_calibrated(law):
             truth <= predictions[f"{TARGET}__q975"].to_numpy()
         )
     coverage = hits / N_REPLICATIONS
-    assert coverage.mean() >= 0.88, f"mean prediction interval coverage was {coverage.mean():.0%}"
-    assert coverage.min() >= 0.8, f"prediction interval coverage by point was {coverage}"
+    assert coverage.mean() >= MEAN_COVERAGE, f"mean coverage was {coverage.mean():.0%}"
+    assert coverage.min() >= MIN_COVERAGE, f"coverage by point was {coverage}"
 
 
 @pytest.mark.parametrize("law", sorted(CASES))
@@ -172,7 +199,7 @@ def test_a_richer_law_on_separable_data_is_flagged_and_still_predicts(law):
         "optimizer_nonconvergence",
     }
     for seed in range(5):
-        frame = _simulate(case, "separable-power", seed=seed, truth=SEPARABLE_TRUTH)
+        frame = _simulate(case, "separable-power", seed=seed, truth=case.separable_truth)
         rich = fit(frame, law=law, n_draws=60, seed=seed)
         simple = fit(frame, n_draws=60, seed=seed)
         assert unidentified & {note.code for note in rich.warnings}, seed
@@ -181,10 +208,16 @@ def test_a_richer_law_on_separable_data_is_flagged_and_still_predicts(law):
         )
 
 
+def _instance(law):
+    """A law over the predictors its case uses, or over one of each for the original two laws."""
+    predictors = CASES[law].predictors if law in CASES else Case({}, 3).predictors
+    return build_law(law, *predictors)
+
+
 def _identified(instance, params, levels):
-    """Whether a square grid with this many levels per predictor pins down every parameter."""
+    """Whether a full grid with this many levels per predictor pins down every parameter."""
     axis = np.linspace(-np.log(30.0), np.log(30.0), levels)
-    grid = np.array([[n, d] for n in axis for d in axis])
+    grid = np.array(list(itertools.product(axis, repeat=len(instance.predictors))))
     number, _ = conditioning(instance, params, grid, np.ones(len(grid)))
     return len(grid) >= instance.n_params and number < 1e8
 
@@ -199,7 +232,7 @@ def test_a_law_is_identified_at_its_declared_minimum_levels(law):
     Where a law asks for more than the package-wide floor of three, the extra level must be necessary too --
     one fewer and some direction in parameter space leaves every fitted value unchanged.
     """
-    instance = build_law(law, ["model_size__n_params"], ["dataset_size__n_subjects"])
+    instance = _instance(law)
     truth = CASES[law].truth if law in CASES else SEPARABLE_TRUTH
     params = np.array([truth[name] for name in instance.param_names])
     required = max(instance.min_predictor_levels)
@@ -211,13 +244,14 @@ def test_a_law_is_identified_at_its_declared_minimum_levels(law):
 @pytest.mark.parametrize("law", sorted(available_laws()))
 def test_raw_scale_parameters_describe_the_same_surface(law):
     """Evaluating raw-scale parameters at raw predictor values must reproduce the normalized fit."""
-    instance = build_law(law, ["model_size__n_params"], ["dataset_size__n_subjects"])
+    instance = _instance(law)
     truth = CASES[law].truth if law in CASES else SEPARABLE_TRUTH
     params = np.array([truth[name] for name in instance.param_names])
-    reference = np.array([3e7, 2e4])
+    k = len(instance.predictors)
+    reference = np.array([3e7, 2e4])[:k]
     raw = instance.raw_scale_params(params, reference)
     raw_vector = np.array([raw[name] for name in instance.param_names])
-    x = np.array([[1e6, 1e3], [4e7, 5e4], [2e9, 8e5]])
+    x = np.array([[1e6, 1e3], [4e7, 5e4], [2e9, 8e5]])[:, :k]
     assert instance.evaluate(raw_vector, np.log(x)) == pytest.approx(
         instance.evaluate(params, np.log(x / reference)), rel=1e-10
     )

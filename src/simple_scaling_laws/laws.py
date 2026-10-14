@@ -51,6 +51,14 @@ OFFSET, AMPLITUDE, EXPONENT = "offset", "amplitude", "exponent"
 SHIFT = "shift"
 #: A non-negative ratio weighting one term against another inside a nonlinearity.
 SCALE = "scale"
+#: A change in log-log slope across a break. Unlike a scaling exponent it may be negative.
+SIGNED_EXPONENT = "signed_exponent"
+#: The scale at which a law changes regime, in normalized predictor units.
+LOCATION = "location"
+#: How many e-folds of scale a change of regime is spread over.
+WIDTH = "width"
+#: The kinds that are slopes on log-log axes, and so are reported by ``ScalingLawModel.exponents``.
+EXPONENT_KINDS: frozenset[str] = frozenset({EXPONENT, SIGNED_EXPONENT})
 #: The kinds that enter a law linearly and are therefore solved exactly rather than searched.
 LINEAR_KINDS: frozenset[str] = frozenset({OFFSET, AMPLITUDE})
 
@@ -81,6 +89,10 @@ EXPONENT_SPEC = NonlinearSpec(0.0, MAX_EXPONENT, EXPONENT_GRID)
 #: The specification of a ratio between two terms.
 SCALE_SPEC = NonlinearSpec(0.0, MAX_SCALE, SCALE_GRID)
 
+#: The specification of a change in slope: as large as an exponent may be, in either direction.
+#: Seeded at no change, a moderate one and a pronounced one each way.
+SLOPE_CHANGE_SPEC = NonlinearSpec(-MAX_EXPONENT, MAX_EXPONENT, (-1.0, -0.3, 0.0, 0.3, 1.0))
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class LawInstance:
@@ -97,7 +109,8 @@ class LawInstance:
         dataset_size: Dataset-size predictor columns, in order.
         param_names: Parameter names, in parameter-vector order.
         param_kinds: Parameter kinds, in parameter-vector order.
-        exponent_predictor: For each true scaling exponent, the index of the predictor it applies to.
+        exponent_predictor: For each exponent -- each parameter that is a slope on log-log axes -- the
+            index of the predictor it applies to.
     """
 
     law: str
@@ -134,7 +147,7 @@ class LawInstance:
 
     @property
     def n_exponents(self) -> int:
-        """Number of true scaling exponents -- not every nonlinear parameter is one.
+        """Number of slopes on log-log axes -- not every nonlinear parameter is one.
 
         Examples:
             >>> law = build_law("shifted-separable-power", ("model_size__n",), ("dataset_size__d",))
@@ -935,6 +948,143 @@ class _BoundedRationalPower:
         return values
 
 
+class _BrokenPower:
+    """``f(x) = E + A * x ** -c0 * (1 + (x / d) ** (1 / f)) ** (-c1 * f)``, for a single predictor.
+
+    The one-break **Broken Neural Scaling Law** of Caballero et al. (2022), *Broken Neural Scaling
+    Laws* -- their functional form with ``n = 1`` break. Every other law here has one slope on
+    log-log axes. This one has two, joined smoothly: below the break scale ``d`` the excess loss
+    falls as ``x ** -c0``, above it as ``x ** -(c0 + c1)``, and ``f`` sets how many e-folds of scale
+    the changeover takes. ``c1`` is the *change* in slope and may have either sign, so the curve can
+    steepen (a delayed take-off), flatten (early saturation), or -- when ``c1 < -c0`` -- turn back up,
+    which is what a single descent of double descent looks like along one axis.
+
+    **Why only one predictor and one break.** The law spends four nonlinear parameters on one axis
+    and has six in all, so that axis must be measured at six or more scales before the break is
+    identified at all. A second break, or a break in each of two predictors, would need scale grids
+    well beyond the experiments this package is for, and would fit them exactly long before it
+    identified anything.
+
+    **Where the break may be.** Only inside the range of scales that was run. A break below the
+    smallest scale leaves just the upper slope visible, and one above the largest just the lower: in
+    both cases ``c0`` and ``c1`` can no longer be told apart, and the fit would be an ordinary power
+    law with two spare parameters. So ``d`` is confined to the observed range, and a break estimated
+    *at* either end is reported as ``parameter_at_bound`` -- read that as "no break was observed".
+    The changeover width is confined in the same spirit: no sharper than a hundredth of the observed
+    range, which no grid could resolve, and no wider than half of it, beyond which there is no
+    visible break either. At ``c1 = 0`` the law is exactly a single-predictor ``separable-power``.
+
+    Because the break is placed from the data, an extrapolation simply continues the upper slope. It
+    cannot anticipate a second regime change beyond the grid, which is the standing caveat of every
+    extrapolation here made concrete.
+    """
+
+    name: ClassVar[str] = "broken-power"
+    description: ClassVar[str] = (
+        "E + A * x**-c0 * (1 + (x / d)**(1 / f))**(-c1 * f) (one smooth change of slope; single predictor)"
+    )
+
+    @staticmethod
+    def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
+        """Construct the :class:`LawInstance` for these predictors."""
+        if len(model_size) + len(dataset_size) != 1:
+            raise LawError(
+                f"Law {_BrokenPower.name!r} needs exactly one predictor, got {len(model_size)} "
+                f"model-size and {len(dataset_size)} dataset-size"
+            )
+        return LawInstance(
+            law=_BrokenPower.name,
+            model_size=model_size,
+            dataset_size=dataset_size,
+            param_names=("E", "A", "c0", "c1", "d", "f"),
+            param_kinds=(OFFSET, AMPLITUDE, EXPONENT, SIGNED_EXPONENT, LOCATION, WIDTH),
+            exponent_predictor=(0, 0),
+        )
+
+    @staticmethod
+    def nonlinear_specs(law: LawInstance, log_x: np.ndarray | None) -> tuple[NonlinearSpec, ...]:
+        """The lower slope, the change of slope, and a break placed and sized from the observed range.
+
+        The seed grid is spent where this law's cost surface is rugged. Moving the break by a fraction of the
+        observed range changes which points sit on which slope, so basins in the break's position and width
+        are narrow; the two slopes are smooth by comparison. The break therefore starts at each sixth of the
+        observed log range and the changeover at a fortieth, a tenth and a quarter of it, while the lower
+        slope gets three starts rather than the usual six. With the break at quarters and two widths, five of
+        twelve simulated turnovers on an eight-decade sweep converged to a visibly worse fit; with this grid
+        none did.
+        """
+        low, high = _log_range(log_x, 0)
+        span = max(high - low, np.finfo(float).eps)
+        slope = NonlinearSpec(0.0, MAX_EXPONENT, (0.05, 0.3, 1.0))
+        location = NonlinearSpec(
+            float(np.exp(low)),
+            float(np.exp(high)),
+            tuple(float(np.exp(low + q * span / 6.0)) for q in range(1, 6)),
+        )
+        width = NonlinearSpec(span / 100.0, span / 2.0, (span / 40.0, span / 10.0, span / 4.0))
+        return (slope, SLOPE_CHANGE_SPEC, location, width)
+
+    @staticmethod
+    def min_levels(law: LawInstance) -> tuple[int, ...]:
+        """Six parameters on one axis: nothing is identified below six scales."""
+        return (law.n_params,)
+
+    @staticmethod
+    def _log_basis(nonlinear: np.ndarray, log_x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Log of the power-law factor, with the standardized distance past the break and its softplus.
+
+        Written in logs throughout: ``(1 + (x / d) ** (1 / f)) ** (-c1 * f)`` is
+        ``exp(-c1 * f * softplus(z))`` with ``z = log(x / d) / f``, which neither overflows for a sharp
+        break far from ``d`` nor loses the small-``x`` limit.
+        """
+        c0, c1, d, f = (nonlinear[..., i, None] for i in range(4))
+        z = (log_x[:, 0] - np.log(d)) / f
+        softplus = np.logaddexp(0.0, z)
+        return -c0 * log_x[:, 0] - c1 * f * softplus, z, softplus
+
+    @staticmethod
+    def design(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Columns ``[1, x**-c0 * (1 + (x / d)**(1 / f))**(-c1 * f)]``."""
+        log_basis, _, _ = _BrokenPower._log_basis(nonlinear, log_x)
+        out = np.empty((log_x.shape[0], 2), dtype=float)
+        out[:, 0] = 1.0
+        out[:, 1] = np.exp(log_basis)
+        return out
+
+    @staticmethod
+    def many_designs(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Design matrices for many nonlinear vectors at once, shape ``(n_draws, n_points, 2)``."""
+        log_basis, _, _ = _BrokenPower._log_basis(nonlinear, log_x)
+        out = np.empty((nonlinear.shape[0], log_x.shape[0], 2), dtype=float)
+        out[:, :, 0] = 1.0
+        out[:, :, 1] = np.exp(log_basis)
+        return out
+
+    @staticmethod
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    ) -> np.ndarray:
+        """Derivatives of ``A * exp(-c0 log x - c1 f softplus(z))`` with ``z = log(x / d) / f``."""
+        _, c1, d, f = nonlinear
+        _, z, softplus = _BrokenPower._log_basis(nonlinear, log_x)
+        sigmoid = np.exp(z - softplus)
+        value = linear[1] * design[:, 1]
+        grad = np.empty((log_x.shape[0], 4), dtype=float)
+        grad[:, 0] = -value * log_x[:, 0]
+        grad[:, 1] = -value * f * softplus
+        grad[:, 2] = value * c1 * sigmoid / d
+        grad[:, 3] = -value * c1 * (softplus - sigmoid * z)
+        return grad
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        """The amplitude absorbs ``reference**c0``; the break is a scale, so it is simply rescaled."""
+        values = _values(law, params)
+        values["A"] *= float(reference[0] ** params[2])
+        values["d"] *= float(reference[0])
+        return values
+
+
 _LAWS: dict[str, Any] = {
     law.name: law
     for law in (
@@ -944,6 +1094,7 @@ _LAWS: dict[str, Any] = {
         _ShiftedSeparablePower,
         _KaplanJointPower,
         _BoundedRationalPower,
+        _BrokenPower,
     )
 }
 _DESIGNS = {name: law.design for name, law in _LAWS.items()}
@@ -972,6 +1123,8 @@ def available_laws() -> dict[str, str]:
         kaplan-joint-power: E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
         bounded-rational-power: (E + I * g) / (1 + g), g = sum_i A_i * x_i**-alpha_i (plateau I at small
         scale, floor E at large)
+        broken-power: E + A * x**-c0 * (1 + (x / d)**(1 / f))**(-c1 * f) (one smooth change of slope;
+        single predictor)
     """
     return {name: law.description for name, law in _LAWS.items()}
 
@@ -1010,7 +1163,7 @@ def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) 
         ...
         simple_scaling_laws.laws.LawError: Unknown law 'no-such-law'; available: separable-power,
         multiplicative-power, separable-interaction-power, shifted-separable-power, kaplan-joint-power,
-        bounded-rational-power
+        bounded-rational-power, broken-power
 
         Some laws are defined only for a particular set of predictors, and say so:
 
