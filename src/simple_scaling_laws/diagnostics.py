@@ -51,10 +51,10 @@ WEAK_IDENTIFICATION_WIDTH = 0.5
 
 #: Condition number of the fitted curve's column-scaled Jacobian above which the fit is reported as
 #: ill-conditioned. The threshold was read off simulation rather than chosen for roundness: laws
-#: fitted to data they can identify measured between 25 and 160 across 3x3 to 4x4 designs, while the
-#: interaction law fitted to data containing no interaction -- where its joint term can only alias
-#: the separable ones -- had a median above ten million. A thousand sits in the empty decade
-#: between the two populations.
+#: fitted to data they can identify measured between 25 and 160 across 3x3 to 4x4 designs, while a
+#: separable law plus a subtracted joint term, fitted to data containing no interaction -- where the
+#: joint term can only alias the separable ones -- had a median above ten million. A thousand sits in
+#: the empty decade between the two populations.
 ILL_CONDITIONING_THRESHOLD = 1e3
 
 #: A parameter is named as taking part in an ill-conditioned direction when its loading on that
