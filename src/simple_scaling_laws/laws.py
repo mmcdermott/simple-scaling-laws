@@ -832,8 +832,8 @@ class _BoundedRationalPower:
     ``(eps_x - eps_inf) / (eps_0 - eps_x) ** alpha = beta * x ** c`` with ``c < 0``. Here ``eps_inf``
     is ``E``, ``eps_0`` is ``I``, the right-hand side is ``g``, and the paper's shape exponent -- its
     ``alpha``, unrelated to this package's power-law exponents -- is fixed at one. Only then can the
-    relation be solved for ``f`` in closed form, and only then is ``f`` linear in ``(E, I)`` given ``g`` -- which is what lets the fitter
-    solve both limits exactly instead of searching for them. Summing ``g`` over several predictors is
+    relation be solved for ``f`` in closed form, and only then is ``f`` linear in ``(E, I)`` given
+    ``g`` -- which is what lets the fitter solve both limits exactly instead of searching for them. Summing ``g`` over several predictors is
     this package's arrangement; the paper's is a single power term. The name records the form
     actually fit rather than claiming the full family.
 
