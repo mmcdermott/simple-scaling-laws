@@ -833,9 +833,9 @@ class _BoundedRationalPower:
     is ``E``, ``eps_0`` is ``I``, the right-hand side is ``g``, and the paper's shape exponent -- its
     ``alpha``, unrelated to this package's power-law exponents -- is fixed at one. Only then can the
     relation be solved for ``f`` in closed form, and only then is ``f`` linear in ``(E, I)`` given
-    ``g`` -- which is what lets the fitter solve both limits exactly instead of searching for them. Summing ``g`` over several predictors is
-    this package's arrangement; the paper's is a single power term. The name records the form
-    actually fit rather than claiming the full family.
+    ``g`` -- which is what lets the fitter solve both limits exactly instead of searching for them.
+    Summing ``g`` over several predictors is this package's arrangement; the paper's is a single
+    power term. The name records the form actually fit rather than claiming the full family.
 
     **What it costs, and when not to use it.** One more parameter than the separable law, the
     plateau. It is identified only if the experiment reaches far enough down to see the curve bend
