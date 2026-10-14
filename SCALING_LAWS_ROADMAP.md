@@ -76,15 +76,15 @@ The shifts `s_N` and `s_D` are nonlinear parameters but amplitudes remain linear
 Alabdulmohsin, Neyshabur, and Zhai (2022) propose
 
 ```math
-\frac{\epsilon_x-\epsilon_\infty}{(\epsilon_0-\epsilon_x)^\lambda}=\beta x^c,
+\frac{\epsilon_x-\epsilon_\infty}{(\epsilon_0-\epsilon_x)^\alpha}=\beta x^c,
 ```
 
-where `epsilon_0` is the small-scale/random-guessing plateau and `epsilon_inf` the large-scale limit.
+where `c < 0`, `epsilon_0` is the small-scale/random-guessing plateau and `epsilon_inf` the large-scale limit. The paper's `alpha` is a shape exponent, unrelated to the power-law exponents named `alpha` elsewhere in this package.
 
 A multidimensional extension is
 
 ```math
-\frac{f-E}{(I-f)^\lambda}=g(n,d),
+\frac{f-E}{(I-f)^{\alpha_{M4}}}=g(n,d),
 ```
 
 with a simple choice
@@ -93,7 +93,7 @@ with a simple choice
 g(n,d)=A n^{-\alpha}+B d^{-\beta}.
 ```
 
-For `lambda = 1`, the response is explicit:
+For `alpha_M4 = 1`, the response is explicit:
 
 ```math
 f=\frac{E+I g}{1+g}.
@@ -101,7 +101,7 @@ f=\frac{E+I g}{1+g}.
 
 A good implementation sequence is therefore:
 
-1. `bounded-rational-power` for the explicit `lambda=1` special case;
+1. `bounded-rational-power` for the explicit `alpha_M4 = 1` special case;
 2. full `m4-power` once nonlinear optimization and identifiability diagnostics are robust.
 
 Do not silently infer the small-scale limit `I`. AUROC has a natural chance value of 0.5, but accuracy, AUPRC, and cross-entropy generally require task-specific information. Add target configuration for an explicit small-scale limit.
@@ -184,7 +184,7 @@ Do not automatically prefer a richer law because its in-sample residual is lower
 
 1. **Interaction surface**: add the model/data interaction law with focused tests and law-owned raw-scale conversion.
 2. **General nonlinear parameters**: refactor parameter metadata/seeding; add Kaplan and shifted laws.
-3. **Bounded small-data laws**: add the rational `lambda=1` law, then full M4 if stable.
+3. **Bounded small-data laws**: add the rational `alpha_M4 = 1` law, then full M4 if stable.
 4. **Broken laws**: add a conservatively scoped BNSL implementation after the simpler laws have been exercised on real data.
 
 ## References

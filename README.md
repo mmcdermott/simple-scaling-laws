@@ -364,7 +364,8 @@ Every law above grows without limit as scale shrinks. A real loss does not: a mo
 almost nothing sits at chance and stays there. `bounded-rational-power` has a plateau `I` at the
 small end as well as a floor `E` at the large one, and moves between them as a weighted average,
 `(E + I·g) / (1 + g)`, whose weight `g = A·N^-α + B·D^-β` is an ordinary separable sum of power
-terms. It is the `λ = 1` case of the M4 estimator of Alabdulmohsin, Neyshabur & Zhai (2022) -- the
+terms. It is the M4 estimator of Alabdulmohsin, Neyshabur & Zhai (2022) with its shape exponent
+(the paper's α, in `(f - E) / (I - f)^α = g`) fixed at one -- the
 one case that can be written down in closed form, and so the one whose two limits the fitter can
 solve exactly rather than search for.
 

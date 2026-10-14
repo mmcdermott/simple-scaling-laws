@@ -827,10 +827,12 @@ class _BoundedRationalPower:
     ``g`` an ordinary separable sum of power terms: large ``g`` (small scale) gives ``I``, small ``g``
     (large scale) gives ``E``, and in between ``f - E`` falls off as a power law.
 
-    It is the ``lambda = 1`` case of the **M4** estimator of Alabdulmohsin, Neyshabur & Zhai (2022),
+    It is a special case of the **M4** estimator of Alabdulmohsin, Neyshabur & Zhai (2022),
     *Revisiting Neural Scaling Laws in Language and Vision*, whose defining relation is
-    ``(f - E) / (I - f) ** lambda = g``. Only at ``lambda = 1`` can that be solved for ``f`` in closed
-    form, and only then is ``f`` linear in ``(E, I)`` given ``g`` -- which is what lets the fitter
+    ``(eps_x - eps_inf) / (eps_0 - eps_x) ** alpha = beta * x ** c`` with ``c < 0``. Here ``eps_inf``
+    is ``E``, ``eps_0`` is ``I``, the right-hand side is ``g``, and the paper's shape exponent -- its
+    ``alpha``, unrelated to this package's power-law exponents -- is fixed at one. Only then can the
+    relation be solved for ``f`` in closed form, and only then is ``f`` linear in ``(E, I)`` given ``g`` -- which is what lets the fitter
     solve both limits exactly instead of searching for them. Summing ``g`` over several predictors is
     this package's arrangement; the paper's is a single power term. The name records the form
     actually fit rather than claiming the full family.
