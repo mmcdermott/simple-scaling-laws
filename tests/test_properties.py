@@ -34,7 +34,9 @@ exponents = st.floats(min_value=0.0, max_value=MAX_EXPONENT, allow_nan=False, al
 
 
 def _law(name, n_model, n_dataset):
-    """Build a law over synthetic predictor names."""
+    """Build a law over synthetic predictor names, honoring any law-specific arity."""
+    if name == "kaplan-joint-power":
+        n_model, n_dataset = 1, 1
     return build_law(
         name,
         [f"model_size__m{i}" for i in range(n_model)],
@@ -54,9 +56,11 @@ def test_analytic_jacobian_matches_finite_differences(name, n_model, n_dataset, 
     """The hand-written derivatives must agree with numerical ones."""
     law = _law(name, n_model, n_dataset)
     rng = np.random.default_rng(seed)
-    n_points = max(3, len(scales) // max(1, law.n_exponents))
+    n_points = max(3, len(scales) // max(1, law.n_nonlinear))
     log_x = np.log(rng.choice(np.asarray(scales), size=(n_points, len(law.predictors))))
-    params = np.concatenate([rng.uniform(-2.0, 2.0, law.n_linear), rng.uniform(0.0, 1.5, law.n_exponents)])
+    # Just above zero: at exactly zero a shift or ratio sits on its bound, where a central
+    # finite difference would step outside the law's domain.
+    params = np.concatenate([rng.uniform(-2.0, 2.0, law.n_linear), rng.uniform(0.01, 1.5, law.n_nonlinear)])
 
     analytic = law.jacobian(params, log_x)
     numerical = np.zeros_like(analytic)
@@ -86,7 +90,7 @@ def test_vectorized_evaluation_matches_the_scalar_one(name, n_model, n_dataset, 
     draws = np.column_stack(
         [
             rng.uniform(-2.0, 2.0, size=(n_draws, law.n_linear)),
-            rng.uniform(0.0, 1.5, size=(n_draws, law.n_exponents)),
+            rng.uniform(0.01, 1.5, size=(n_draws, law.n_nonlinear)),
         ]
     )
     expected = np.array([law.evaluate(p, log_x) for p in draws])
@@ -294,9 +298,11 @@ def test_law_structure_is_self_consistent_and_round_trips(name, n_model, n_datas
     law = _law(name, n_model, n_dataset)
     assert len(law.param_names) == len(law.param_kinds) == law.n_params
     assert len(set(law.param_names)) == law.n_params
-    assert law.n_linear + law.n_exponents == law.n_params
+    assert law.n_linear + law.n_nonlinear == law.n_params
     assert len(law.exponent_predictor) == law.n_exponents
-    assert set(law.exponent_predictor).issubset(range(n_model + n_dataset))
+    assert set(law.exponent_predictor).issubset(range(len(law.predictors)))
+    assert len(law.nonlinear_specs()) == law.n_nonlinear
+    assert len(law.min_predictor_levels) == len(law.predictors)
     assert sorted(law.display_names) == sorted(law.param_names)
     assert LawInstance.from_dict(law.to_dict()) == law
 

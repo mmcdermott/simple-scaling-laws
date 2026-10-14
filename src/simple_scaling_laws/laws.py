@@ -1,9 +1,15 @@
 """The built-in scaling-law family registry.
 
 Every law in this package has the same structure: it is **linear** in an offset and one or more amplitudes,
-and **nonlinear** only in its exponents. That structure is what makes the fitter small and robust -- given the
-exponents, the remaining parameters are solved exactly by (bounded) linear least squares, so the optimizer
-only ever has to search a low-dimensional, well-behaved space.
+and **nonlinear** in everything else. That structure is what makes the fitter small and robust -- given the
+nonlinear parameters, the remaining ones are solved exactly by (bounded) linear least squares, so the
+optimizer only ever has to search a low-dimensional, well-behaved space.
+
+For the original laws the nonlinear block is nothing but exponents. Richer laws add other kinds of nonlinear
+parameter -- an additive shift, a ratio between two terms -- and those do not share an exponent's natural
+range. So each law states, per nonlinear parameter, the box it may move in and the values worth starting the
+optimizer from (:class:`NonlinearSpec`), and may consult the observed predictors to do it. The fitter itself
+knows nothing about any particular kind.
 
 Predictors are always supplied in *normalized* form (each divided by a reference scale, see
 :mod:`simple_scaling_laws.data`), so amplitudes are on the target's own scale and the exponents are unchanged
@@ -24,8 +30,29 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: exists to keep the optimizer inside a numerically sane region, not to express a belief.
 MAX_EXPONENT: float = 3.0
 
-#: Parameter kinds, in the order they appear in a parameter vector.
+#: Candidate exponent values used to seed the optimizer, spanning the empirically plausible range.
+EXPONENT_GRID: tuple[float, ...] = (0.01, 0.03, 0.08, 0.2, 0.5, 1.2)
+
+#: Upper bound on a ratio between two terms of a law, in normalized units. Predictors are normalized
+#: to a geometric mean of one, so a ratio of one means the two terms matter equally at the centre of
+#: the design; at a hundred, one of them is invisible across any design this package targets.
+MAX_SCALE: float = 100.0
+
+#: Candidate ratios used to seed the optimizer, centred on "equally important at the centre".
+SCALE_GRID: tuple[float, ...] = (0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
+
+#: Bounds assumed for data-dependent parameters when no predictors are supplied: a design spanning
+#: one decade either side of its centre.
+DEFAULT_LOG_HALF_RANGE: float = float(np.log(10.0))
+
+#: Parameter kinds. The linear kinds come first in a parameter vector, then the nonlinear ones.
 OFFSET, AMPLITUDE, EXPONENT = "offset", "amplitude", "exponent"
+#: An additive shift inside a power term, ``(x + s) ** -alpha``, in normalized predictor units.
+SHIFT = "shift"
+#: A non-negative ratio weighting one term against another inside a nonlinearity.
+SCALE = "scale"
+#: The kinds that enter a law linearly and are therefore solved exactly rather than searched.
+LINEAR_KINDS: frozenset[str] = frozenset({OFFSET, AMPLITUDE})
 
 
 class LawError(ValueError):
@@ -33,11 +60,35 @@ class LawError(ValueError):
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class NonlinearSpec:
+    """Where one nonlinear parameter may go, and where to start looking for it.
+
+    Attributes:
+        lower: Lower bound.
+        upper: Upper bound.
+        grid: Starting values for the optimizer's grid of restarts, all within the bounds.
+    """
+
+    lower: float
+    upper: float
+    grid: tuple[float, ...]
+
+
+#: The specification shared by every ordinary scaling exponent: non-negative, so a term decays as
+#: scale grows, and capped at :data:`MAX_EXPONENT`.
+EXPONENT_SPEC = NonlinearSpec(0.0, MAX_EXPONENT, EXPONENT_GRID)
+
+#: The specification of a ratio between two terms.
+SCALE_SPEC = NonlinearSpec(0.0, MAX_SCALE, SCALE_GRID)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class LawInstance:
     """A scaling law bound to a concrete set of predictor columns.
 
-    A parameter vector is ordered ``[offset, *amplitudes, *exponents]``: the linear block first,
-    then the nonlinear block. :attr:`n_linear` splits the two.
+    A parameter vector is ordered ``[offset, *amplitudes, *nonlinear]``: the linear block first,
+    then the nonlinear block. :attr:`n_linear` splits the two. For the simplest laws the nonlinear
+    block is only exponents; :attr:`nonlinear_kinds` says what it holds in general.
 
     Attributes:
         law: Name of the law family.
@@ -45,7 +96,7 @@ class LawInstance:
         dataset_size: Dataset-size predictor columns, in order.
         param_names: Parameter names, in parameter-vector order.
         param_kinds: Parameter kinds, in parameter-vector order.
-        exponent_predictor: For each exponent, the index of the predictor it applies to.
+        exponent_predictor: For each true scaling exponent, the index of the predictor it applies to.
     """
 
     law: str
@@ -68,12 +119,71 @@ class LawInstance:
     @property
     def n_linear(self) -> int:
         """Number of parameters that enter the law linearly (the offset plus the amplitudes)."""
-        return sum(k != EXPONENT for k in self.param_kinds)
+        return sum(k in LINEAR_KINDS for k in self.param_kinds)
+
+    @property
+    def n_nonlinear(self) -> int:
+        """Number of parameters the optimizer has to search over."""
+        return self.n_params - self.n_linear
+
+    @property
+    def nonlinear_kinds(self) -> tuple[str, ...]:
+        """The kind of each nonlinear parameter, in parameter-vector order."""
+        return self.param_kinds[self.n_linear :]
 
     @property
     def n_exponents(self) -> int:
-        """Number of exponents."""
+        """Number of true scaling exponents -- not every nonlinear parameter is one.
+
+        Examples:
+            >>> law = build_law("shifted-separable-power", ("model_size__n",), ("dataset_size__d",))
+            >>> law.n_nonlinear, law.n_exponents
+            (4, 2)
+        """
         return len(self.exponent_predictor)
+
+    @property
+    def min_predictor_levels(self) -> tuple[int, ...]:
+        """How many distinct values each predictor must take before its terms are identified.
+
+        A predictor measured at ``L`` values offers ``L - 1`` contrasts, and an additive term in
+        that predictor is identified only if it has no more free parameters than that. A plain power
+        term ``A * x ** -alpha`` has two, hence three levels; a shifted one has three, hence four.
+
+        Examples:
+            >>> build_law("separable-power", ("model_size__n",), ("dataset_size__d",)).min_predictor_levels
+            (3, 3)
+            >>> build_law("shifted-separable-power", ("model_size__n",), ()).min_predictor_levels
+            (4,)
+        """
+        return _MIN_LEVELS[self.law](self)
+
+    def nonlinear_specs(self, log_x: np.ndarray | None = None) -> tuple[NonlinearSpec, ...]:
+        """Bounds and starting values for each nonlinear parameter.
+
+        Args:
+            log_x: Log-normalized predictors actually observed, shape ``(n_obs, n_predictors)``. A
+                law whose parameters only mean something relative to the design -- a shift is large
+                or small compared with the scales that were run -- uses it to place them. Without
+                it, a design spanning a decade either side of its centre is assumed.
+
+        Returns:
+            One :class:`NonlinearSpec` per nonlinear parameter, in parameter-vector order.
+
+        Examples:
+            >>> law = build_law("separable-power", ("model_size__n",), ("dataset_size__d",))
+            >>> law.nonlinear_specs() == (EXPONENT_SPEC, EXPONENT_SPEC)
+            True
+
+            A shift is bounded by the largest scale observed, so it widens with the design:
+
+            >>> shifted = build_law("shifted-separable-power", ("model_size__n",), ())
+            >>> narrow = shifted.nonlinear_specs(np.log(np.array([[0.1], [1.0], [10.0]])))
+            >>> wide = shifted.nonlinear_specs(np.log(np.array([[0.01], [1.0], [100.0]])))
+            >>> round(narrow[1].upper, 6), round(wide[1].upper, 6)
+            (10.0, 100.0)
+        """
+        return _SPECS[self.law](self, None if log_x is None else np.asarray(log_x, dtype=float))
 
     @property
     def display_names(self) -> tuple[str, ...]:
@@ -88,26 +198,27 @@ class LawInstance:
         """
         names = list(self.param_names)
         linear = names[: self.n_linear]
-        exponents = names[self.n_linear :]
-        if len(linear) - 1 == len(exponents):  # one amplitude per exponent
+        nonlinear = names[self.n_linear :]
+        paired = all(kind == EXPONENT for kind in self.nonlinear_kinds)
+        if paired and len(linear) - 1 == len(nonlinear):  # one amplitude per exponent
             ordered = [linear[0]]
-            for amp, exp in zip(linear[1:], exponents, strict=True):
+            for amp, exp in zip(linear[1:], nonlinear, strict=True):
                 ordered.extend([amp, exp])
             return tuple(ordered)
-        return tuple(linear + exponents)
+        return tuple(linear + nonlinear)
 
-    def design(self, exponents: np.ndarray, log_x: np.ndarray) -> np.ndarray:
-        """Design matrix of the linear block, given the exponents.
+    def design(self, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Design matrix of the linear block, given the nonlinear parameters.
 
         Args:
-            exponents: Shape ``(n_exponents,)``.
+            nonlinear: Shape ``(n_nonlinear,)``.
             log_x: Natural log of the normalized predictors, shape ``(n_obs, n_predictors)``.
 
         Returns:
             Array of shape ``(n_obs, n_linear)`` whose product with the linear parameters is the
             law's value.
         """
-        return _DESIGNS[self.law](self, np.asarray(exponents, dtype=float), log_x)
+        return _DESIGNS[self.law](self, np.asarray(nonlinear, dtype=float), log_x)
 
     def evaluate(self, params: np.ndarray, log_x: np.ndarray) -> np.ndarray:
         """Evaluate the law.
@@ -127,8 +238,8 @@ class LawInstance:
         """
         params = np.asarray(params, dtype=float)
         linear = params[: self.n_linear]
-        exponents = params[self.n_linear :]
-        return self.design(exponents, log_x) @ linear
+        nonlinear = params[self.n_linear :]
+        return self.design(nonlinear, log_x) @ linear
 
     def evaluate_many(self, params: np.ndarray, log_x: np.ndarray) -> np.ndarray:
         """Evaluate the law for many parameter vectors at once.
@@ -153,8 +264,8 @@ class LawInstance:
         """
         params = np.atleast_2d(np.asarray(params, dtype=float))
         linear = params[:, : self.n_linear]
-        exponents = params[:, self.n_linear :]
-        designs = _MANY_DESIGNS[self.law](self, exponents, log_x)
+        nonlinear = params[:, self.n_linear :]
+        designs = _MANY_DESIGNS[self.law](self, nonlinear, log_x)
         return np.einsum("bl,bnl->bn", linear, designs)
 
     def jacobian(self, params: np.ndarray, log_x: np.ndarray) -> np.ndarray:
@@ -169,11 +280,11 @@ class LawInstance:
         """
         params = np.asarray(params, dtype=float)
         linear = params[: self.n_linear]
-        exponents = params[self.n_linear :]
-        design = self.design(exponents, log_x)
+        nonlinear = params[self.n_linear :]
+        design = self.design(nonlinear, log_x)
         jac = np.empty((log_x.shape[0], self.n_params), dtype=float)
         jac[:, : self.n_linear] = design
-        jac[:, self.n_linear :] = _EXPONENT_GRADS[self.law](self, linear, design, log_x)
+        jac[:, self.n_linear :] = _NONLINEAR_GRADS[self.law](self, linear, nonlinear, design, log_x)
         return jac
 
     def raw_scale_params(self, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
@@ -250,6 +361,23 @@ def _names(base: str, columns: Sequence[str]) -> list[str]:
     return [f"{base}_{_short(c)}" for c in columns]
 
 
+def _exponent_specs(law: LawInstance, log_x: np.ndarray | None) -> tuple[NonlinearSpec, ...]:
+    """Specifications for a law whose nonlinear block is nothing but exponents."""
+    return (EXPONENT_SPEC,) * law.n_nonlinear
+
+
+def _three_levels(law: LawInstance) -> tuple[int, ...]:
+    """Each predictor enters through plain power terms: an amplitude and an exponent, so three levels."""
+    return (3,) * len(law.predictors)
+
+
+def _log_range(log_x: np.ndarray | None, column: int) -> tuple[float, float]:
+    """Smallest and largest observed log-normalized value of one predictor."""
+    if log_x is None or log_x.size == 0:
+        return -DEFAULT_LOG_HALF_RANGE, DEFAULT_LOG_HALF_RANGE
+    return float(log_x[:, column].min()), float(log_x[:, column].max())
+
+
 def _values(law: LawInstance, params: np.ndarray) -> dict[str, float]:
     """Map a parameter vector to its names, leaving every value on its current scale."""
     return dict(zip(law.param_names, (float(v) for v in params), strict=True))
@@ -264,6 +392,9 @@ class _SeparablePower:
 
     name: ClassVar[str] = "separable-power"
     description: ClassVar[str] = "E + sum_i A_i * x_i**-alpha_i (one additive power term per predictor)"
+
+    nonlinear_specs = staticmethod(_exponent_specs)
+    min_levels = staticmethod(_three_levels)
 
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
@@ -296,8 +427,8 @@ class _SeparablePower:
         return out
 
     @staticmethod
-    def exponent_grad(
-        law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
     ) -> np.ndarray:
         """``d f / d alpha_j = -A_j * log(x_j) * x_j**-alpha_j``."""
         return -linear[None, 1:] * log_x * design[:, 1:]
@@ -321,6 +452,9 @@ class _MultiplicativePower:
 
     name: ClassVar[str] = "multiplicative-power"
     description: ClassVar[str] = "E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)"
+
+    nonlinear_specs = staticmethod(_exponent_specs)
+    min_levels = staticmethod(_three_levels)
 
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
@@ -352,8 +486,8 @@ class _MultiplicativePower:
         return out
 
     @staticmethod
-    def exponent_grad(
-        law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
     ) -> np.ndarray:
         """``d f / d alpha_j = -A * log(x_j) * prod_i x_i**-alpha_i``."""
         return -linear[1] * log_x * design[:, 1:2]
@@ -400,6 +534,9 @@ class _SeparableInteractionPower:
         "E + sum_i A_i * x_i**-alpha_i - C * prod_i x_i**-gamma_i (separable terms minus a joint term)"
     )
 
+    nonlinear_specs = staticmethod(_exponent_specs)
+    min_levels = staticmethod(_three_levels)
+
     @staticmethod
     def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
         """Construct the :class:`LawInstance` for these predictors."""
@@ -438,8 +575,8 @@ class _SeparableInteractionPower:
         return out
 
     @staticmethod
-    def exponent_grad(
-        law: LawInstance, linear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
     ) -> np.ndarray:
         """Main-effect exponents as in the separable law; joint ones scale the (negative) joint column."""
         k = len(law.predictors)
@@ -460,13 +597,241 @@ class _SeparableInteractionPower:
         return values
 
 
+class _ShiftedSeparablePower:
+    """``f(x) = E + sum_i A_i * (x_i + s_i) ** -alpha_i``.
+
+    A plain power term diverges as its predictor goes to zero, and is a straight line on log-log
+    axes all the way down. Real curves are not: at the small end of an experiment the loss flattens
+    toward a finite value before the clean power-law regime begins. A non-negative shift ``s`` inside
+    the power gives the term a finite value ``A * s ** -alpha`` at zero scale and leaves its
+    large-scale behavior untouched, so the pre-asymptotic points stop dragging the exponent down.
+
+    The single-predictor form is the saturating law ``E = a * (C + d) ** -b + c`` that Zhai et al.
+    (2022), *Scaling Vision Transformers*, fit to error against compute, where the shift ``d`` gives a
+    zero-compute model a finite error. A related but different shifted form, ``alpha * (D ** -1 + C)
+    ** p`` from Bansal et al. (2022), *Data Scaling Laws in NMT*, shifts the *reciprocal* of the scale
+    and so bounds the large-scale end instead; that one is what Alabdulmohsin et al. (2022) and
+    Caballero et al. (2022) label **M3**, and it is not this law. The separable sum over several
+    predictors is this package's arrangement.
+
+    **What it costs.** One more parameter per predictor, and a fourth level of every predictor: with
+    only three there are two contrasts from which to learn an amplitude, an exponent *and* a shift.
+    At ``s = 0`` the law is exactly ``separable-power``, so on data that are already a clean power law
+    the shifts sit on their lower bound and are reported as ``parameter_at_bound``.
+
+    The shift is in normalized predictor units and is bounded above by the largest scale observed:
+    beyond that the term is nearly flat across the whole experiment and the shift can no longer be
+    told apart from the amplitude and the exponent.
+    """
+
+    name: ClassVar[str] = "shifted-separable-power"
+    description: ClassVar[str] = (
+        "E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite small-scale limit)"
+    )
+
+    @staticmethod
+    def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
+        """Construct the :class:`LawInstance` for these predictors."""
+        predictors = model_size + dataset_size
+        amps = _names("A", model_size) + _names("B", dataset_size)
+        exps = _names("alpha", model_size) + _names("beta", dataset_size)
+        shifts = _names("s", predictors)
+        return LawInstance(
+            law=_ShiftedSeparablePower.name,
+            model_size=model_size,
+            dataset_size=dataset_size,
+            param_names=("E", *amps, *exps, *shifts),
+            param_kinds=(
+                OFFSET,
+                *([AMPLITUDE] * len(amps)),
+                *([EXPONENT] * len(exps)),
+                *([SHIFT] * len(shifts)),
+            ),
+            exponent_predictor=tuple(range(len(predictors))),
+        )
+
+    @staticmethod
+    def nonlinear_specs(law: LawInstance, log_x: np.ndarray | None) -> tuple[NonlinearSpec, ...]:
+        """Exponents as usual; each shift between zero and the largest scale its predictor reached.
+
+        The starting values are the three qualitatively different cases: no shift at all, a shift
+        comparable to the smallest scale observed (it bends only the low end), and one comparable to
+        the centre of the design (it bends everything).
+        """
+        k = len(law.predictors)
+        shifts = []
+        for column in range(k):
+            low, high = _log_range(log_x, column)
+            upper = float(np.exp(high))
+            shifts.append(NonlinearSpec(0.0, upper, (0.0, min(float(np.exp(low)), upper), min(1.0, upper))))
+        return (*([EXPONENT_SPEC] * k), *shifts)
+
+    @staticmethod
+    def min_levels(law: LawInstance) -> tuple[int, ...]:
+        """An amplitude, an exponent and a shift per predictor need three contrasts, so four levels."""
+        return (4,) * len(law.predictors)
+
+    @staticmethod
+    def design(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Columns ``[1, (x_1 + s_1)**-alpha_1, ..., (x_k + s_k)**-alpha_k]``."""
+        k = len(law.predictors)
+        out = np.empty((log_x.shape[0], law.n_linear), dtype=float)
+        out[:, 0] = 1.0
+        out[:, 1:] = (np.exp(log_x) + nonlinear[None, k:]) ** -nonlinear[None, :k]
+        return out
+
+    @staticmethod
+    def many_designs(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Design matrices for many nonlinear vectors at once, shape ``(n_draws, n_points, n_linear)``."""
+        k = len(law.predictors)
+        out = np.empty((nonlinear.shape[0], log_x.shape[0], law.n_linear), dtype=float)
+        out[:, :, 0] = 1.0
+        out[:, :, 1:] = (np.exp(log_x)[None, :, :] + nonlinear[:, None, k:]) ** -nonlinear[:, None, :k]
+        return out
+
+    @staticmethod
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    ) -> np.ndarray:
+        """With ``u = x + s``: ``d/d alpha = -A log(u) u**-alpha`` and ``d/d s = -A alpha u**-alpha / u``."""
+        k = len(law.predictors)
+        base = np.exp(log_x) + nonlinear[None, k:]
+        terms = linear[None, 1:] * design[:, 1:]
+        grad = np.empty((log_x.shape[0], 2 * k), dtype=float)
+        grad[:, :k] = -terms * np.log(base)
+        grad[:, k:] = -terms * nonlinear[None, :k] / base
+        return grad
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        """Amplitudes absorb ``reference**alpha``; a shift is a length, so it simply scales."""
+        values = _values(law, params)
+        k = len(law.predictors)
+        exponents = params[law.n_linear : law.n_linear + k]
+        for i, name in enumerate(law.param_names[1 : 1 + k]):
+            values[name] *= float(reference[i] ** exponents[i])
+        for i, name in enumerate(law.param_names[law.n_linear + k :]):
+            values[name] *= float(reference[i])
+        return values
+
+
+class _KaplanJointPower:
+    """``f(N, D) = E + A * (N ** -rho + R / D) ** beta``.
+
+    The joint model/data law of Kaplan et al. (2020), *Scaling Laws for Neural Language Models*
+    (their equation 1.5), ``L = [(N_c / N) ** (alpha_N / alpha_D) + D_c / D] ** alpha_D``, rewritten so
+    that the fitter's linear block is visible. Multiplying their bracket through by a constant turns
+    ``N_c`` into the amplitude ``A`` and leaves one ratio ``R`` between the two terms; ``rho`` is
+    their ``alpha_N / alpha_D`` and ``beta`` their ``alpha_D``. The offset ``E`` is this package's
+    addition -- Kaplan et al. fit a loss with no irreducible floor -- and a fit is free to put it at
+    zero.
+
+    What it describes that the separable law cannot is a *bottleneck*: whichever resource is scarcer
+    sets the loss. With ample data the bracket is ``N ** -rho`` and the law is a power law in model
+    size with exponent ``rho * beta``; with an ample model it is ``R / D`` and the law is a power law
+    in data with exponent ``beta``. In between, adding the abundant resource does almost nothing --
+    the curve in model size saturates at a level set by the data. It is monotone in both: it does not
+    describe a larger model being *worse*, for which see ``separable-interaction-power``.
+
+    It takes exactly one model-size and one dataset-size predictor, because the form is specifically
+    a contest between those two. At ``R = 0`` data drop out altogether and only the product
+    ``rho * beta`` is identified, which is reported as ``parameter_at_bound`` and
+    ``ill_conditioned_fit``.
+    """
+
+    name: ClassVar[str] = "kaplan-joint-power"
+    description: ClassVar[str] = "E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)"
+
+    @staticmethod
+    def build(model_size: tuple[str, ...], dataset_size: tuple[str, ...]) -> LawInstance:
+        """Construct the :class:`LawInstance` for these predictors."""
+        if len(model_size) != 1 or len(dataset_size) != 1:
+            raise LawError(
+                f"Law {_KaplanJointPower.name!r} needs exactly one model-size and one dataset-size "
+                f"predictor, got {len(model_size)} and {len(dataset_size)}"
+            )
+        return LawInstance(
+            law=_KaplanJointPower.name,
+            model_size=model_size,
+            dataset_size=dataset_size,
+            param_names=("E", "A", "rho", "beta", "R"),
+            param_kinds=(OFFSET, AMPLITUDE, EXPONENT, EXPONENT, SCALE),
+            # ``rho`` shapes the model-size term. ``beta`` is the exponent the law has in data once
+            # data are the bottleneck, so it is filed under the dataset-size predictor.
+            exponent_predictor=(0, 1),
+        )
+
+    @staticmethod
+    def nonlinear_specs(law: LawInstance, log_x: np.ndarray | None) -> tuple[NonlinearSpec, ...]:
+        """Two exponents and the ratio between the model term and the data term."""
+        return (EXPONENT_SPEC, EXPONENT_SPEC, SCALE_SPEC)
+
+    min_levels = staticmethod(_three_levels)
+
+    @staticmethod
+    def _bracket(nonlinear: np.ndarray, log_x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The model term ``N**-rho`` and the whole bracket ``N**-rho + R / D``."""
+        model_term = np.exp(-nonlinear[..., 0, None] * log_x[:, 0])
+        return model_term, model_term + nonlinear[..., 2, None] * np.exp(-log_x[:, 1])
+
+    @staticmethod
+    def design(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Columns ``[1, (N**-rho + R / D)**beta]``."""
+        _, bracket = _KaplanJointPower._bracket(nonlinear, log_x)
+        out = np.empty((log_x.shape[0], 2), dtype=float)
+        out[:, 0] = 1.0
+        out[:, 1] = bracket ** nonlinear[1]
+        return out
+
+    @staticmethod
+    def many_designs(law: LawInstance, nonlinear: np.ndarray, log_x: np.ndarray) -> np.ndarray:
+        """Design matrices for many nonlinear vectors at once, shape ``(n_draws, n_points, 2)``."""
+        _, bracket = _KaplanJointPower._bracket(nonlinear, log_x)
+        out = np.empty((nonlinear.shape[0], log_x.shape[0], 2), dtype=float)
+        out[:, :, 0] = 1.0
+        out[:, :, 1] = bracket ** nonlinear[:, 1, None]
+        return out
+
+    @staticmethod
+    def nonlinear_grad(
+        law: LawInstance, linear: np.ndarray, nonlinear: np.ndarray, design: np.ndarray, log_x: np.ndarray
+    ) -> np.ndarray:
+        """With bracket ``g``: ``d/d rho = -A beta g**(beta-1) N**-rho log N``, and likewise for ``R``."""
+        model_term, bracket = _KaplanJointPower._bracket(nonlinear, log_x)
+        value = linear[1] * design[:, 1]
+        slope = value * nonlinear[1] / bracket
+        grad = np.empty((log_x.shape[0], 3), dtype=float)
+        grad[:, 0] = -slope * model_term * log_x[:, 0]
+        grad[:, 1] = value * np.log(bracket)
+        grad[:, 2] = slope * np.exp(-log_x[:, 1])
+        return grad
+
+    @staticmethod
+    def raw_scale(law: LawInstance, params: np.ndarray, reference: np.ndarray) -> dict[str, float]:
+        """Pull ``N_ref**rho`` out of the bracket: it rescales ``A`` by its ``beta`` power, and ``R``."""
+        values = _values(law, params)
+        _, _, rho, beta, _ = params
+        values["A"] *= float(reference[0] ** (rho * beta))
+        values["R"] *= float(reference[1] / reference[0] ** rho)
+        return values
+
+
 _LAWS: dict[str, Any] = {
-    law.name: law for law in (_SeparablePower, _MultiplicativePower, _SeparableInteractionPower)
+    law.name: law
+    for law in (
+        _SeparablePower,
+        _MultiplicativePower,
+        _SeparableInteractionPower,
+        _ShiftedSeparablePower,
+        _KaplanJointPower,
+    )
 }
 _DESIGNS = {name: law.design for name, law in _LAWS.items()}
-_EXPONENT_GRADS = {name: law.exponent_grad for name, law in _LAWS.items()}
+_NONLINEAR_GRADS = {name: law.nonlinear_grad for name, law in _LAWS.items()}
 _MANY_DESIGNS = {name: law.many_designs for name, law in _LAWS.items()}
 _RAW_SCALE = {name: law.raw_scale for name, law in _LAWS.items()}
+_SPECS = {name: law.nonlinear_specs for name, law in _LAWS.items()}
+_MIN_LEVELS = {name: law.min_levels for name, law in _LAWS.items()}
 
 #: Name of the law used when the user does not choose one.
 DEFAULT_LAW = _SeparablePower.name
@@ -482,6 +847,9 @@ def available_laws() -> dict[str, str]:
         multiplicative-power: E + A * prod_i x_i**-alpha_i (one joint multiplicative power term)
         separable-interaction-power: E + sum_i A_i * x_i**-alpha_i - C * prod_i x_i**-gamma_i (separable
         terms minus a joint term)
+        shifted-separable-power: E + sum_i A_i * (x_i + s_i)**-alpha_i (power terms with a finite
+        small-scale limit)
+        kaplan-joint-power: E + A * (N**-rho + R / D)**beta (Kaplan et al. joint model/data law)
     """
     return {name: law.description for name, law in _LAWS.items()}
 
@@ -498,7 +866,8 @@ def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) 
         The bound :class:`LawInstance`.
 
     Raises:
-        LawError: If the law name is unknown or no predictors were supplied.
+        LawError: If the law name is unknown, no predictors were supplied, or the law cannot be
+            built over this number of predictors.
 
     Examples:
         >>> law = build_law("separable-power", ["model_size__n_params"], ["dataset_size__n_subj"])
@@ -518,7 +887,15 @@ def build_law(law: str, model_size: Sequence[str], dataset_size: Sequence[str]) 
         Traceback (most recent call last):
         ...
         simple_scaling_laws.laws.LawError: Unknown law 'no-such-law'; available: separable-power,
-        multiplicative-power, separable-interaction-power
+        multiplicative-power, separable-interaction-power, shifted-separable-power, kaplan-joint-power
+
+        Some laws are defined only for a particular set of predictors, and say so:
+
+        >>> build_law("kaplan-joint-power", ["model_size__n"], [])
+        Traceback (most recent call last):
+        ...
+        simple_scaling_laws.laws.LawError: Law 'kaplan-joint-power' needs exactly one model-size and one
+        dataset-size predictor, got 1 and 0
     """
     if law not in _LAWS:
         raise LawError(f"Unknown law {law!r}; available: {', '.join(_LAWS)}")

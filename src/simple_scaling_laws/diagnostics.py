@@ -31,9 +31,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: variation to judge the fit by, or to resample in the bootstrap.
 MIN_CONFIGURATIONS = 4
 
-#: Distinct levels a predictor needs before its exponent is identified at all. Restricted to one
-#: predictor, every law here reduces to ``E + A * x**-alpha``: three free parameters, so two points
-#: can always be fit exactly by infinitely many (E, A, alpha) triples.
+#: Distinct levels a predictor needs before a plain power term in it is identified at all.
+#: Restricted to one predictor, such a law reduces to ``E + A * x**-alpha``: three free parameters,
+#: so two points can always be fit exactly by infinitely many (E, A, alpha) triples. Laws that put
+#: more than an amplitude and an exponent on a predictor need more, and say how many through
+#: :attr:`simple_scaling_laws.laws.LawInstance.min_predictor_levels`; this is the floor.
 MIN_PREDICTOR_LEVELS = 3
 
 #: Absolute correlation between log predictors above which they are called collinear.
@@ -151,20 +153,22 @@ def design_notes(dataset: Dataset, law: LawInstance) -> list[Note]:
             )
         )
 
-    for column in law.predictors:
+    for column, law_minimum in zip(law.predictors, law.min_predictor_levels, strict=True):
         j = dataset.schema.predictors.index(column)
         levels = int(np.unique(dataset.config_values[:, j]).size)
-        if 2 <= levels < MIN_PREDICTOR_LEVELS:
+        required = max(MIN_PREDICTOR_LEVELS, law_minimum)
+        if 2 <= levels < required:
             notes.append(
                 Note(
                     "too_few_predictor_levels",
                     "error",
-                    f"Predictor {column!r} was measured at only {levels} distinct values. Its "
-                    "exponent is not identified: two points can be fit exactly by any number of "
-                    f"different curves, so the fitted exponent, amplitude and offset are arbitrary "
-                    "and their intervals do not cover the truth. Add a third scale for this "
-                    "predictor.",
-                    {"predictor": column, "n_levels": levels, "required": MIN_PREDICTOR_LEVELS},
+                    f"Predictor {column!r} was measured at only {levels} distinct values, and this "
+                    f"law needs {required}. Its terms in that predictor are not identified: "
+                    f"{levels} points can be fit exactly by any number of different curves, so the "
+                    "fitted exponent, amplitude and offset are arbitrary and their intervals do not "
+                    f"cover the truth. Measure this predictor at {required - levels} more "
+                    "scale(s).",
+                    {"predictor": column, "n_levels": levels, "required": required},
                 )
             )
 

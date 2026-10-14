@@ -2,10 +2,13 @@
 
 Fitting happens on **run-level means**, weighted by how precisely each mean is known. The optimization
 exploits the fact that every law in this package is linear in its offset and amplitudes: for any candidate
-exponent vector the remaining parameters are solved exactly by bounded linear least squares, so a coarse grid
-over exponents gives excellent starting points and the nonlinear optimizer only has to polish them. This is
-far more reliable at small sample sizes than random multistart, and it is fast enough to redo thousands of
-times inside the bootstrap.
+value of its nonlinear parameters the remaining ones are solved exactly by bounded linear least squares, so a
+coarse grid over the nonlinear parameters gives excellent starting points and the nonlinear optimizer only has
+to polish them. This is far more reliable at small sample sizes than random multistart, and it is fast enough
+to redo thousands of times inside the bootstrap.
+
+Which values that grid holds, and what box each nonlinear parameter is confined to, is the law's business
+rather than the fitter's: see :meth:`simple_scaling_laws.laws.LawInstance.nonlinear_specs`.
 """
 
 from __future__ import annotations
@@ -17,17 +20,15 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.optimize import least_squares, lsq_linear
 
-from .laws import AMPLITUDE, EXPONENT, MAX_EXPONENT, LawInstance
+from .laws import AMPLITUDE, LINEAR_KINDS, LawInstance
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
     from .data import TargetObservations
+    from .laws import NonlinearSpec
 
-#: Candidate exponent values used to seed the optimizer, spanning the empirically plausible range.
-EXPONENT_GRID: tuple[float, ...] = (0.01, 0.03, 0.08, 0.2, 0.5, 1.2)
-
-#: Cap on the number of grid combinations evaluated when a law has many exponents.
+#: Cap on the number of grid combinations evaluated when a law has many nonlinear parameters.
 MAX_GRID_POINTS = 256
 
 #: How many of the best grid starts are polished by the nonlinear optimizer.
@@ -101,19 +102,25 @@ class Bounds:
         return tuple(pinned)
 
 
-def parameter_bounds(law: LawInstance, y: np.ndarray, signed_amplitude: bool) -> Bounds:
+def parameter_bounds(
+    law: LawInstance, y: np.ndarray, signed_amplitude: bool, log_x: np.ndarray | None = None
+) -> Bounds:
     """Data-driven box constraints for a law's parameters.
 
     Exponents are always non-negative, so every term decays as scale grows. Loss amplitudes are
     non-negative too, which gives the conventional "irreducible floor plus decaying terms" reading.
     Metric amplitudes are free in sign so that an increasing metric can approach its asymptote from
-    below. The remaining bounds are generous multiples of the observed spread; they exist to keep
-    the optimizer in a numerically sane region, and a parameter that lands on one is reported.
+    below. The remaining linear bounds are generous multiples of the observed spread; they exist to
+    keep the optimizer in a numerically sane region, and a parameter that lands on one is reported.
+
+    The nonlinear bounds come from the law (:meth:`~simple_scaling_laws.laws.LawInstance.nonlinear_specs`),
+    which may place them relative to the observed predictors.
 
     Args:
         law: The instantiated law.
         y: Observed target values, used to set the scale.
         signed_amplitude: Whether amplitudes may be negative.
+        log_x: Log-normalized predictors, for laws whose nonlinear bounds depend on the design.
 
     Returns:
         The :class:`Bounds` for this law and target.
@@ -136,28 +143,39 @@ def parameter_bounds(law: LawInstance, y: np.ndarray, signed_amplitude: bool) ->
     scale = max(spread, 0.1 * float(np.abs(y).mean()), 1e-8)
     lower, upper = [], []
     for kind in law.param_kinds:
-        match kind:
-            case _ if kind == EXPONENT:
-                lower.append(0.0)
-                upper.append(MAX_EXPONENT)
-            case _ if kind == AMPLITUDE:
-                lower.append(-AMPLITUDE_BOUND_FACTOR * scale if signed_amplitude else 0.0)
-                upper.append(AMPLITUDE_BOUND_FACTOR * scale)
-            case _:
-                lower.append(float(y.min()) - OFFSET_BOUND_FACTOR * scale)
-                upper.append(float(y.max()) + OFFSET_BOUND_FACTOR * scale)
+        if kind not in LINEAR_KINDS:
+            continue
+        if kind == AMPLITUDE:
+            lower.append(-AMPLITUDE_BOUND_FACTOR * scale if signed_amplitude else 0.0)
+            upper.append(AMPLITUDE_BOUND_FACTOR * scale)
+        else:
+            lower.append(float(y.min()) - OFFSET_BOUND_FACTOR * scale)
+            upper.append(float(y.max()) + OFFSET_BOUND_FACTOR * scale)
+    for spec in law.nonlinear_specs(log_x):
+        lower.append(spec.lower)
+        upper.append(spec.upper)
     return Bounds(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float))
 
 
-def _exponent_grid(n_exponents: int) -> np.ndarray:
-    """Grid of candidate exponent vectors, subsampled when the full product is too large."""
-    if n_exponents == 0:  # pragma: no cover - every law has at least one exponent
+def _nonlinear_grid(specs: Sequence[NonlinearSpec]) -> np.ndarray:
+    """Grid of candidate nonlinear vectors, subsampled when the full product is too large.
+
+    The subsample is drawn from a fixed seed, so a fit stays exactly reproducible.
+
+    Examples:
+        >>> from .laws import EXPONENT_SPEC, NonlinearSpec
+        >>> _nonlinear_grid([EXPONENT_SPEC, NonlinearSpec(0.0, 1.0, (0.0, 0.5))]).shape
+        (12, 2)
+        >>> _nonlinear_grid([EXPONENT_SPEC] * 4).shape
+        (256, 4)
+    """
+    if not specs:  # pragma: no cover - every law has at least one nonlinear parameter
         return np.zeros((1, 0))
-    total = len(EXPONENT_GRID) ** n_exponents
+    total = int(np.prod([len(spec.grid) for spec in specs]))
     if total <= MAX_GRID_POINTS:
-        return np.array(list(itertools.product(EXPONENT_GRID, repeat=n_exponents)), dtype=float)
+        return np.array(list(itertools.product(*(spec.grid for spec in specs))), dtype=float)
     rng = np.random.default_rng(0)
-    return rng.choice(np.asarray(EXPONENT_GRID), size=(MAX_GRID_POINTS, n_exponents))
+    return np.column_stack([rng.choice(np.asarray(spec.grid), size=MAX_GRID_POINTS) for spec in specs])
 
 
 def _solve_linear(a: np.ndarray, b: np.ndarray, low: np.ndarray, high: np.ndarray):
@@ -173,9 +191,9 @@ def _solve_linear(a: np.ndarray, b: np.ndarray, low: np.ndarray, high: np.ndarra
 class GridSeeder:
     """Reusable variable-projection restarts for a fixed design, weights and bounds.
 
-    For each candidate exponent vector the offset and amplitudes are solved exactly, so each seed is
-    already optimal in every direction except the exponents. The design matrices and their
-    pseudo-inverses depend only on the exponent grid, the predictors and the weights -- none of
+    For each candidate nonlinear vector the offset and amplitudes are solved exactly, so each seed is
+    already optimal in every direction except the nonlinear ones. The design matrices and their
+    pseudo-inverses depend only on the nonlinear grid, the predictors and the weights -- none of
     which change across bootstrap draws -- so they are computed once here and reused thousands of
     times.
 
@@ -204,8 +222,8 @@ class GridSeeder:
         self.law = law
         self.bounds = bounds
         self.sqrt_w = np.sqrt(np.asarray(weights, dtype=float))
-        self.exponents = _exponent_grid(law.n_exponents)
-        self.designs = [self.sqrt_w[:, None] * law.design(exponents, log_x) for exponents in self.exponents]
+        self.nonlinear = _nonlinear_grid(law.nonlinear_specs(log_x))
+        self.designs = [self.sqrt_w[:, None] * law.design(nonlinear, log_x) for nonlinear in self.nonlinear]
         self.pseudo_inverses = [np.linalg.pinv(design) for design in self.designs]
         self.low = bounds.lower[: law.n_linear]
         self.high = bounds.upper[: law.n_linear]
@@ -238,7 +256,7 @@ class GridSeeder:
                     cost = 0.5 * float(np.sum((design @ linear - b) ** 2))
             else:
                 cost = 0.5 * float(np.sum((design @ linear - b) ** 2))
-            candidates.append((cost, np.concatenate([linear, self.exponents[i]])))
+            candidates.append((cost, np.concatenate([linear, self.nonlinear[i]])))
         candidates.sort(key=lambda item: item[0])
         return [(cost, self.bounds.clip(params)) for cost, params in candidates[:n_seeds]]
 
