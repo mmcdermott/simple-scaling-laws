@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from simple_scaling_laws import fit
+from simple_scaling_laws.fitting import parameter_bounds
 from simple_scaling_laws.laws import LawError, build_law
 from simple_scaling_laws.model import raw_scale_params
 from simple_scaling_laws.simulate import simulate_runs
@@ -134,3 +135,19 @@ def test_a_two_predictor_experiment_is_refused_with_a_reason():
     )
     with pytest.raises(LawError, match="exactly one predictor"):
         fit(frame, law="broken-power", n_draws=20)
+
+
+def test_a_break_well_inside_a_wide_sweep_is_not_reported_at_its_bound():
+    """Closeness to a bound on a scale parameter is relative, not a fixed fraction of a decades-wide box.
+
+    On an eight-decade sweep the old rule flagged any break below about 0.01 of the reference scale --
+    1.7 decades inside the range here -- as ``parameter_at_bound``, which this law reads as "no break".
+    """
+    law = build_law("broken-power", ("model_size__n",), ())
+    log_x = np.log(np.logspace(-4, 4, 12))[:, None]
+    truth = np.array([1.0, 2.0, 0.15, 0.5, 0.005, 1.0])
+    bounds = parameter_bounds(law, law.evaluate(truth, log_x), False, log_x)
+    assert bounds.at_bound(truth, law.param_names) == ()
+    pinned = truth.copy()
+    pinned[4] = bounds.lower[4]
+    assert bounds.at_bound(pinned, law.param_names) == ("d",)

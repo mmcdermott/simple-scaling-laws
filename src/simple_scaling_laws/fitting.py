@@ -61,8 +61,9 @@ BOUND_TOLERANCE = 1e-6
 CONVERGENCE_TOLERANCE = 1e-10
 MAX_EVALUATIONS_PER_PARAM = 60
 
-#: A target whose values span less than this fraction of their own magnitude carries no scaling
-#: information at all and is fit as a constant rather than handed to the optimizer.
+#: A target whose values span less than this fraction of their own magnitude (or than this absolute
+#: amount, for values below one) carries no scaling information at all and is fit as a constant rather
+#: than handed to the optimizer.
 CONSTANT_TARGET_TOLERANCE = 1e-10
 
 
@@ -73,10 +74,14 @@ class Bounds:
     Attributes:
         lower: Lower bounds, one per parameter.
         upper: Upper bounds, one per parameter.
+        resolution: Per parameter, the scale below which a distance from a bound is negligible, or
+            NaN for the default (the box's width); see
+            :attr:`~simple_scaling_laws.laws.NonlinearSpec.resolution`. Defaults to all NaN.
     """
 
     lower: np.ndarray
     upper: np.ndarray
+    resolution: np.ndarray | None = None
 
     def clip(self, params: np.ndarray) -> np.ndarray:
         """Project a parameter vector into the box."""
@@ -90,13 +95,20 @@ class Bounds:
             names: Parameter names, in parameter-vector order.
 
         Returns:
-            The names of parameters within :data:`BOUND_TOLERANCE` of a finite bound.
+            The names of parameters within :data:`BOUND_TOLERANCE` of a finite bound, measured
+            relative to the box's width or, where a resolution is set, to the bound itself.
         """
+        resolution = np.full(len(self.lower), np.nan) if self.resolution is None else self.resolution
         pinned = []
-        for value, low, high, name in zip(params, self.lower, self.upper, names, strict=True):
-            width = max(abs(high - low), 1.0)
-            at_low = np.isfinite(low) and abs(value - low) <= BOUND_TOLERANCE * width
-            at_high = np.isfinite(high) and abs(value - high) <= BOUND_TOLERANCE * width
+        for value, low, high, floor, name in zip(
+            params, self.lower, self.upper, resolution, names, strict=True
+        ):
+            if np.isnan(floor):
+                low_scale = high_scale = max(abs(high - low), 1.0)
+            else:
+                low_scale, high_scale = max(abs(low), floor), max(abs(high), floor)
+            at_low = np.isfinite(low) and abs(value - low) <= BOUND_TOLERANCE * low_scale
+            at_high = np.isfinite(high) and abs(value - high) <= BOUND_TOLERANCE * high_scale
             if at_low or at_high:
                 pinned.append(name)
         return tuple(pinned)
@@ -107,14 +119,15 @@ def parameter_bounds(
 ) -> Bounds:
     """Data-driven box constraints for a law's parameters.
 
-    Exponents are always non-negative, so every term decays as scale grows. Loss amplitudes are
-    non-negative too, which gives the conventional "irreducible floor plus decaying terms" reading.
+    Ordinary exponents are non-negative, so every term decays as scale grows; a change of slope
+    (``broken-power``'s ``c1``) may take either sign. Loss amplitudes are non-negative, which gives
+    the conventional "irreducible floor plus decaying terms" reading.
     Metric amplitudes are free in sign so that an increasing metric can approach its asymptote from
     below. The remaining linear bounds are generous multiples of the observed spread; they exist to
     keep the optimizer in a numerically sane region, and a parameter that lands on one is reported.
 
-    The nonlinear bounds come from the law (:meth:`~simple_scaling_laws.laws.LawInstance.nonlinear_specs`),
-    which may place them relative to the observed predictors.
+    Each law states its nonlinear bounds (:meth:`~simple_scaling_laws.laws.LawInstance.nonlinear_specs`),
+    and may place them relative to the observed predictors.
 
     Args:
         law: The instantiated law.
@@ -141,7 +154,7 @@ def parameter_bounds(
     # the spread alone would exclude. Tying the scale to the magnitude of the target as well keeps
     # that reachable.
     scale = max(spread, 0.1 * float(np.abs(y).mean()), 1e-8)
-    lower, upper = [], []
+    lower, upper, resolution = [], [], []
     for kind in law.param_kinds:
         if kind not in LINEAR_KINDS:
             continue
@@ -151,23 +164,29 @@ def parameter_bounds(
         else:
             lower.append(float(y.min()) - OFFSET_BOUND_FACTOR * scale)
             upper.append(float(y.max()) + OFFSET_BOUND_FACTOR * scale)
+    resolution = [np.nan] * len(lower)
     for spec in law.nonlinear_specs(log_x):
         lower.append(spec.lower)
         upper.append(spec.upper)
-    return Bounds(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float))
+        resolution.append(np.nan if spec.resolution is None else spec.resolution)
+    return Bounds(
+        np.asarray(lower, dtype=float), np.asarray(upper, dtype=float), np.asarray(resolution, dtype=float)
+    )
 
 
 def _nonlinear_grid(specs: Sequence[NonlinearSpec]) -> np.ndarray:
     """Grid of candidate nonlinear vectors, subsampled when the full product is too large.
 
-    The subsample is drawn from a fixed seed, so a fit stays exactly reproducible.
+    The subsample is drawn without replacement from the full product, so every seed is distinct, and
+    from a fixed seed, so a fit stays exactly reproducible.
 
     Examples:
         >>> from .laws import EXPONENT_SPEC, NonlinearSpec
         >>> _nonlinear_grid([EXPONENT_SPEC, NonlinearSpec(0.0, 1.0, (0.0, 0.5))]).shape
         (12, 2)
-        >>> _nonlinear_grid([EXPONENT_SPEC] * 4).shape
-        (256, 4)
+        >>> grid = _nonlinear_grid([EXPONENT_SPEC] * 4)
+        >>> grid.shape, len(np.unique(grid, axis=0))
+        ((256, 4), 256)
     """
     if not specs:  # pragma: no cover - every law has at least one nonlinear parameter
         return np.zeros((1, 0))
@@ -175,7 +194,11 @@ def _nonlinear_grid(specs: Sequence[NonlinearSpec]) -> np.ndarray:
     if total <= MAX_GRID_POINTS:
         return np.array(list(itertools.product(*(spec.grid for spec in specs))), dtype=float)
     rng = np.random.default_rng(0)
-    return np.column_stack([rng.choice(np.asarray(spec.grid), size=MAX_GRID_POINTS) for spec in specs])
+    chosen = np.sort(rng.choice(total, size=MAX_GRID_POINTS, replace=False))
+    positions = np.unravel_index(chosen, [len(spec.grid) for spec in specs])
+    return np.column_stack(
+        [np.asarray(spec.grid)[index] for spec, index in zip(specs, positions, strict=True)]
+    )
 
 
 def _solve_linear(a: np.ndarray, b: np.ndarray, low: np.ndarray, high: np.ndarray):
