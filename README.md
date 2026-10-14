@@ -765,6 +765,59 @@ scaling-laws allocate experiment.slaw --budget 1e18 --budget 1e19 --cost power:k
 scaling-laws allocate experiment.slaw --budget 1e18 --cost power:b=1 --cost-records runs.parquet
 ```
 
+### Checking the frontier without the law: isoFLOP profiles
+
+The frontier above is only as good as the law's shape out at the optimum. The law-free check is
+Chinchilla's "Approach 2": train several model sizes at each of a few fixed budgets, find the bottom of
+each budget's valley, and fit a line of `log N*` against `log C`. It needs a different experiment --
+sweeps along curves of equal cost -- which `simulate_runs` can lay out from explicit configurations:
+
+```pycon
+>>> import numpy as np
+>>> from simple_scaling_laws import fit_isoflop
+>>> sweeps = [
+...     (n, float(chinchilla.dataset_size_for(budget, n)))
+...     for budget in (1e15, 1e16, 1e17, 1e18)
+...     for n in np.sqrt(budget / 60.0) * np.logspace(-0.6, 0.6, 6)
+... ]
+>>> isoflop_runs = simulate_runs(
+...     {"test_loss__cross_entropy": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.4}},
+...     configurations=sweeps,
+...     predictors=("model_size__n_params", "dataset_size__n_tokens"),
+...     run_sd=0.005,
+...     eval_sd=0.005,
+...     seed=0,
+... )
+>>> profiles = fit_isoflop(isoflop_runs, cost=chinchilla, n_draws=200)
+>>> profiles.profiles()["bracketed"].to_list()
+[True, True, True, True]
+>>> round(profiles.exponent()["median"], 2)  # beta / (alpha + beta) = 0.57 for this law
+0.57
+
+```
+
+Each profile is a cubic in `log N` by default, not Chinchilla's parabola. Along a curve of equal cost
+the valley is lopsided whenever the two exponents differ, the parabola's minimum is pulled toward the
+shallow side, and resampling cannot see that bias: simulated, the parabola's 95% intervals for `N*`
+covered the truth only 48-72% of the time when the noise was small, the cubic's 92-100%. The cost is
+one more model size per profile (five at least) and wider intervals; `degree=2` is still available.
+
+Report the two frontiers side by side, rather than choosing between them. Where their intervals do not
+overlap, at least one is wrong -- most often the law, being extrapolated -- and
+`isoflop_law_disagreement` says so:
+
+```pycon
+>>> law = fit(isoflop_runs, n_draws=200, seed=0)
+>>> profiles.compare(law, [1e18, 1e20])["agree"].to_list()
+[True, True]
+
+```
+
+Profiles report `isoflop_too_few_profile_points` (fewer than five sizes, or four for a parabola),
+`isoflop_minimum_not_bracketed` (the minimum lies outside the sizes run, so add sizes on the other side),
+`isoflop_profile_not_convex`, `isoflop_unstable_minimum` and `isoflop_too_few_budgets` (fewer than three).
+From the command line, `scaling-laws isoflop runs.parquet --cost power:k=6,a=1,b=1 --budget 1e20`.
+
 ## Prediction semantics
 
 | `kind`    | answers                                                              |

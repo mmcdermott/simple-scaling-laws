@@ -274,11 +274,38 @@ def corrected_residuals(
     """
     residual = y - law.evaluate(params, log_x)
     absorbed = leverage(law, params, log_x, weights)
-    ceiling = 1.0 - MAX_LEVERAGE_HEADROOM / max(y.size, MAX_LEVERAGE_HEADROOM + 1.0)
-    cluster = np.arange(y.size) if clusters is None else np.unique(clusters, return_inverse=True)[1]
+    return pseudo_residuals(residual, absorbed, weights, law.n_params, clusters, noise_var)
+
+
+def pseudo_residuals(
+    residual: np.ndarray,
+    absorbed: np.ndarray,
+    weights: np.ndarray,
+    n_params: int,
+    clusters: np.ndarray | None = None,
+    noise_var: np.ndarray | None = None,
+) -> np.ndarray:
+    """The corrections of :func:`corrected_residuals`, for any fit whose residuals and leverages are known.
+
+    Shared with estimators that are not scaling laws -- the isoFLOP profile fit -- so that every
+    bootstrap in the package corrects its residuals the same, calibrated way.
+
+    Args:
+        residual: Raw residuals, one per run.
+        absorbed: Each run's leverage.
+        weights: Fitting weights.
+        n_params: Parameters the fit consumed.
+        clusters: Resampling cluster of each run. Defaults to one per observation.
+        noise_var: Variance of each run mean; without it, no noise floor is applied.
+
+    Returns:
+        Corrected residuals, one per run.
+    """
+    ceiling = 1.0 - MAX_LEVERAGE_HEADROOM / max(residual.size, MAX_LEVERAGE_HEADROOM + 1.0)
+    cluster = np.arange(residual.size) if clusters is None else np.unique(clusters, return_inverse=True)[1]
     n_clusters = int(cluster.max()) + 1
     corrected = residual / np.sqrt(1.0 - np.clip(absorbed, 0.0, ceiling))
-    corrected *= cluster_correction(n_clusters, law.n_params)
+    corrected *= cluster_correction(n_clusters, n_params)
     if noise_var is None:
         return corrected
 

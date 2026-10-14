@@ -24,7 +24,8 @@ import yaml
 from .api import fit as fit_model
 from .artifact import package_version
 from .compare import compare as compare_models
-from .cost import CostError, CostModel, cost_model, fit_cost_model
+from .cost import CostError, CostModel, available_cost_params, cost_model, fit_cost_model
+from .isoflop import IsoflopError, fit_isoflop
 from .laws import DEFAULT_LAW, available_laws
 from .model import DEFAULT_QUANTILES, PREDICTION_KINDS, ScalingLawModel
 from .uncertainty import DEFAULT_DRAWS
@@ -282,6 +283,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     allocate_parser.add_argument("--output", "-o", help="Destination .parquet or .csv (default: stdout CSV).")
 
+    isoflop_parser = subparsers.add_parser(
+        "isoflop", help="Fit isoFLOP profiles to sweeps at fixed budgets, and extrapolate the optimum."
+    )
+    isoflop_parser.add_argument("input", help="Evaluation records as .parquet or .csv.")
+    isoflop_parser.add_argument(
+        "--cost",
+        help="FORM[:name=value,...]. Assigns budgets when there is no compute__* column, and gives D*. "
+        "Parameters left out are fit to the input's compute__* column.",
+    )
+    isoflop_parser.add_argument("--target", help="Target to profile (default: primary).")
+    isoflop_parser.add_argument(
+        "--budget",
+        action="append",
+        type=float,
+        help="Predict the optimum here. Repeatable; default: the profiles.",
+    )
+    isoflop_parser.add_argument(
+        "--degree", type=int, default=3, choices=(2, 3), help="Profile polynomial degree."
+    )
+    isoflop_parser.add_argument(
+        "--quantiles", default=",".join(str(q) for q in DEFAULT_QUANTILES), help="Comma-separated quantiles."
+    )
+    isoflop_parser.add_argument(
+        "--draws", type=int, default=DEFAULT_DRAWS, help="Bootstrap draws (advanced)."
+    )
+    isoflop_parser.add_argument("--seed", type=int, default=0, help="Random seed (advanced).")
+    isoflop_parser.add_argument("--output", "-o", help="Destination .parquet or .csv (default: stdout CSV).")
+
     compare_parser = subparsers.add_parser(
         "compare", help="Compare two or more fitted systems at new scales."
     )
@@ -374,6 +403,38 @@ def _run_allocate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_isoflop(args: argparse.Namespace) -> int:
+    """Execute the ``isoflop`` subcommand."""
+    cost = None
+    if args.cost is not None:
+        form, _, given = args.cost.partition(":")
+        complete = {name.split("=")[0].strip() for name in given.split(",") if "=" in name}
+        records = None if complete >= set(_cost_param_names(form)) else args.input
+        cost = parse_cost(args.cost, records)
+        print(f"cost model: {cost.description}", file=sys.stderr)
+    try:
+        profiles = fit_isoflop(
+            args.input, cost=cost, target=args.target, degree=args.degree, n_draws=args.draws, seed=args.seed
+        )
+    except IsoflopError as exc:
+        raise CLIError(str(exc)) from exc
+    for note in profiles.notes:
+        print(f"{note.severity}: {note.message}", file=sys.stderr)
+    exponent = profiles.exponent()
+    print(f"optimal model size grows as budget ** {exponent['median']:.3f}", file=sys.stderr)
+    quantiles = parse_quantiles(args.quantiles)
+    table = profiles.predict(args.budget, quantiles) if args.budget else profiles.profiles(quantiles)
+    write_frame(table, args.output)
+    return 0
+
+
+def _cost_param_names(form: str) -> tuple[str, ...]:
+    try:
+        return tuple(available_cost_params()[form])
+    except KeyError as exc:
+        raise CLIError(f"Unknown cost form {form!r}") from exc
+
+
 def _run_compare(args: argparse.Namespace) -> int:
     """Execute the ``compare`` subcommand."""
     models = {name: ScalingLawModel.load(path) for name, path in parse_models(args.model).items()}
@@ -419,6 +480,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "fit": _run_fit,
         "predict": _run_predict,
         "allocate": _run_allocate,
+        "isoflop": _run_isoflop,
         "compare": _run_compare,
         "inspect": _run_inspect,
     }
