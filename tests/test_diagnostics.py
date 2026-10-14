@@ -95,8 +95,35 @@ def test_zero_residual_degrees_of_freedom_falls_back_to_a_parametric_bootstrap()
     assert "parametric_uncertainty" in codes(model)
 
 
-def test_few_bootstrap_clusters_is_flagged():
-    """Resampling over a handful of configurations gives unreliable intervals, and says so."""
+def test_few_bootstrap_clusters_is_flagged_for_a_target_missing_at_some_scales():
+    """A target observed at only part of the design resamples over fewer clusters than the design has.
+
+    That is specific to the target, so it gets its own note; a design that is small for every target is
+    reported once, as ``too_few_configurations``, rather than twice.
+    """
+    frame = simulate_runs(
+        {"test_loss__ce": TRUE_LOSS, "test_metric__auroc": {**TRUE_LOSS, "E": 0.9, "A": -0.2, "B": -0.1}},
+        model_sizes=(1e6, 1e7, 1e8),
+        dataset_sizes=(1e3, 1e4, 1e5),
+        runs_per_config=2,
+        evaluations_per_run=4,
+        run_sd=0.02,
+        eval_sd=0.03,
+        seed=0,
+    )
+    partial = frame.with_columns(
+        pl.when(pl.col("dataset_size__n_subjects") > 1e4)
+        .then(None)
+        .otherwise(pl.col("test_metric__auroc"))
+        .alias("test_metric__auroc")
+    )
+    model = fit(partial, n_draws=100, seed=0)
+    flagged = [note for note in model.warnings if note.code == "few_bootstrap_clusters"]
+    assert [note.details["target"] for note in flagged] == ["test_metric__auroc"]
+    assert "too_few_configurations" not in codes(model)
+
+
+def test_a_small_design_is_reported_once_not_once_per_target():
     frame = simulate_runs(
         {"test_loss__ce": TRUE_LOSS},
         model_sizes=(1e6, 1e7, 1e8),
@@ -108,7 +135,8 @@ def test_few_bootstrap_clusters_is_flagged():
         seed=0,
     )
     model = fit(frame, n_draws=100, seed=0)
-    assert "few_bootstrap_clusters" in codes(model)
+    assert "too_few_configurations" in codes(model)
+    assert "few_bootstrap_clusters" not in codes(model)
 
 
 def test_a_single_configuration_yields_a_constant_fit():

@@ -11,16 +11,24 @@ authors = [
 description = "Fit empirical ML scaling laws, with conservative uncertainty, from repeated training/evaluation records."
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["scaling laws", "machine learning", "bootstrap", "uncertainty", "extrapolation"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 dependencies = [
   "numpy>=1.26",
   "scipy>=1.13",
   "polars>=1.0",
-  "pyyaml>=6.0",
+  # 6.0 has no Python 3.12 wheel and its source build fails there.
+  "pyyaml>=6.0.1",
 ]
 
 [dependency-groups]
@@ -39,6 +47,9 @@ dev = [
 docs = []
 
 [tool.setuptools_scm] # Required for setuptools-scm to work, even if empty
+
+[tool.setuptools.package-data]
+simple_scaling_laws = ["py.typed"]
 
 [project.optional-dependencies]
 

@@ -168,6 +168,7 @@ def _fit_target(
         seed=seed,
         target=target,
         run_sd_from_replicates=components.source == "replicates",
+        n_design_configurations=dataset.n_configurations,
     )
     goodness = diagnostics_mod.goodness_of_fit(y, law.evaluate(fit.params, log_x), weights, law.n_params)
     target_fit = TargetFit(

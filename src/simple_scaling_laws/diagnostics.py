@@ -175,10 +175,9 @@ def design_notes(dataset: Dataset, law: LawInstance) -> list[Note]:
                 )
             )
 
-    for role, columns in (
-        ("model_size", dataset.schema.model_size),
-        ("dataset_size", dataset.schema.dataset_size),
-    ):
+    # Only predictors the law actually uses: one the fit dropped for being held fixed already has its
+    # own note (``constant_predictor_dropped``), and has no exponent to speak of.
+    for role, columns in (("model_size", law.model_size), ("dataset_size", law.dataset_size)):
         for column in columns:
             j = dataset.schema.predictors.index(column)
             if np.unique(dataset.config_values[:, j]).size < 2:

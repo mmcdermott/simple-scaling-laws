@@ -372,6 +372,7 @@ class ScalingLawModel:
         """
         if not 0 < level < 1:
             raise ValueError(f"level must be in (0, 1), got {level}")
+        self._fit(target)  # a helpful error for an unknown target
         tail = (1.0 - level) / 2.0
         lower, upper = self._draws[target].quantiles([tail, 1.0 - tail])
         by_name = {name: (float(lower[i]), float(upper[i])) for i, name in enumerate(self._law.param_names)}

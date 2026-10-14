@@ -23,8 +23,8 @@ nearly as many parameters as configurations passes almost exactly through some o
 residuals are close to zero whatever the noise was, and resampling them perturbs nothing -- least of
 all the points a nonlinear parameter such as a break location rests on. The run-to-run and evaluation
 variances are estimated separately, so the share a configuration's leverage absorbed is known, and the
-floor puts it back. It only ever widens an interval; see :func:`corrected_residuals` for what it
-measured.
+floor puts it back. It never shrinks a configuration's pseudo-residual, so it pushes intervals wider,
+not narrower; see :func:`corrected_residuals` for what it measured.
 
 When the fit has no residual degrees of freedom left, no wild bootstrap is possible; the package
 falls back to a parametric bootstrap from the estimated variance components and says so in a note.
@@ -229,7 +229,9 @@ def corrected_residuals(
     configuration's mean pseudo-residual is also floored at ``tail * sqrt(H_c * v_c)``, where
     ``v_c`` is the variance of that configuration's weighted mean and ``tail`` is
     :func:`tail_correction`: the share of its noise the fit absorbed, which its residual cannot
-    show. Within-configuration deviations are left as they are.
+    show. Within-configuration deviations are left as they are, so the floor acts on each
+    configuration's mean -- the part a refit responds to -- and an individual run's pseudo-residual
+    can still move toward zero when its deviation points the other way.
 
     The floor is measured, not assumed. On the ``broken-power`` law -- six parameters on eight or
     twelve scales -- nominal 95% prediction intervals covered the truth 70-88% of the time without
@@ -387,6 +389,7 @@ def bootstrap(
     seed: int = 0,
     target: str = "target",
     run_sd_from_replicates: bool = True,
+    n_design_configurations: int | None = None,
 ) -> Uncertainty:
     """Estimate parameter uncertainty by wild cluster bootstrap over configurations.
 
@@ -405,6 +408,9 @@ def bootstrap(
         target: Name of the target, used only in warning messages.
         run_sd_from_replicates: Whether ``run_sd`` was estimated from replicate runs, and so may be
             resampled from them; otherwise its draws repeat it.
+        n_design_configurations: Configurations in the whole experiment. When this target was
+            observed at all of them, a shortage of clusters is a property of the design and is
+            already reported as ``too_few_configurations``, so it is not repeated here.
 
     Returns:
         The :class:`Uncertainty` for this target.
@@ -471,7 +477,8 @@ def bootstrap(
     if method == "wild-cluster":
         multipliers = _webb_signs(rng, clusters.size, n_draws)[:, cluster_of_run]
         synthetic = fitted[None, :] + multipliers * pseudo[None, :]
-        if clusters.size < law.n_params + 2:
+        missing_here = n_design_configurations is None or clusters.size < n_design_configurations
+        if clusters.size < law.n_params + 2 and missing_here:
             notes.append(
                 Note(
                     "few_bootstrap_clusters",

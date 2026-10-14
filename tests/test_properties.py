@@ -61,20 +61,34 @@ def test_analytic_jacobian_matches_finite_differences(name, n_model, n_dataset, 
     rng = np.random.default_rng(seed)
     n_points = max(3, len(scales) // max(1, law.n_nonlinear))
     log_x = np.log(rng.choice(np.asarray(scales), size=(n_points, len(law.predictors))))
-    # Just above zero: at exactly zero a shift or ratio sits on its bound, where a central
-    # finite difference would step outside the law's domain.
-    params = np.concatenate([rng.uniform(-2.0, 2.0, law.n_linear), rng.uniform(0.01, 1.5, law.n_nonlinear)])
+    # A predictor held at one value has no range to place a break or a shift in; the fitter never
+    # reaches the law with such a design.
+    assume(bool(np.all(np.ptp(log_x, axis=0) > 1e-3)))
+    # Nonlinear parameters anywhere in the law's own box for this design -- signed slope changes,
+    # data-placed break locations and shifts, ratios up to their cap -- kept a hair inside it, so a
+    # central difference never steps outside the law's domain.
+    specs = law.nonlinear_specs(log_x)
+    low = np.array([spec.lower for spec in specs])
+    high = np.array([spec.upper for spec in specs])
+    margin = 1e-3 * (high - low)
+    params = np.concatenate([rng.uniform(-2.0, 2.0, law.n_linear), rng.uniform(low + margin, high - margin)])
 
     analytic = law.jacobian(params, log_x)
     numerical = np.zeros_like(analytic)
     for j in range(law.n_params):
         step = 1e-6 * max(1.0, abs(params[j]))
+        if j >= law.n_linear:
+            step = min(step, 0.5 * margin[j - law.n_linear])
         up, down = params.copy(), params.copy()
         up[j] += step
         down[j] -= step
         numerical[:, j] = (law.evaluate(up, log_x) - law.evaluate(down, log_x)) / (2 * step)
-    scale = np.maximum(np.abs(numerical).max(), 1.0)
-    assert np.allclose(analytic, numerical, atol=1e-4 * scale, rtol=1e-4)
+    # Column by column, so an error in a small column is not hidden by a large one elsewhere. The
+    # absolute floor is the central difference's own roundoff (about eps * |f| / step), far below
+    # any column that matters.
+    column_scale = np.abs(numerical).max(axis=0)
+    roundoff = 1e-7 * max(1.0, float(np.abs(law.evaluate(params, log_x)).max()))
+    assert np.all(np.abs(analytic - numerical) <= 1e-4 * column_scale + 1e-4 * np.abs(numerical) + roundoff)
 
 
 @given(
