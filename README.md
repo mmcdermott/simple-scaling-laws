@@ -818,6 +818,62 @@ Profiles report `isoflop_too_few_profile_points` (fewer than five sizes, or four
 `isoflop_profile_not_convex`, `isoflop_unstable_minimum` and `isoflop_too_few_budgets` (fewer than three).
 From the command line, `scaling-laws isoflop runs.parquet --cost power:k=6,a=1,b=1 --budget 1e20`.
 
+### Planning the experiment
+
+Before anything has run, `isoflop_grid` lays out sweeps of model size along curves of equal cost,
+centred on a guess at the optimum -- a data-to-model ratio, explicit sizes, or a fit of earlier runs.
+The same runs serve both frontiers: along each curve they are an isoFLOP profile, and across curves they
+form a grid, rotated in `(log N, log D)`, that a joint law can be fit to.
+
+```pycon
+>>> from simple_scaling_laws import isoflop_grid, score_design, suggest_runs
+>>> from simple_scaling_laws.design import design_correlation
+>>> plan = isoflop_grid([1e15, 1e16, 1e17, 1e18], chinchilla, centre=20.0)
+>>> plan.height, int(plan["runs"].sum()), round(design_correlation(plan), 2)
+(24, 28, -0.3)
+
+```
+
+Every point on a curve of equal cost costs the same, so how wide each sweep reaches is free. Wider
+sweeps reach the lopsided corners that pin down how model size and data trade off, and protect
+against a centre guessed wrong. Scored by simulation (`score_design`, which fits both frontiers to
+simulated runs of a candidate plan under plausible truths), the law's frontier kept improving with
+width, and the isoFLOP profiles did best around the default of ±1.2 decades. Use `score_design` to
+compare plans of your own before spending anything on them.
+
+Once some runs exist, `suggest_runs` picks the next ones to shrink the uncertainty in the optimal model
+size at the budgets you care about, per unit of compute. It treats the bootstrap draws as an approximate
+posterior and asks, for each candidate point on the budgets you can afford, how much one more run there
+would narrow the target, conditioning on each pick before making the next:
+
+```pycon
+>>> pilot_plan = isoflop_grid([1e15, 1e16], chinchilla, centre=20.0)
+>>> pilot = simulate_runs(
+...     {"test_loss__cross_entropy": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.4}},
+...     configurations=list(zip(pilot_plan["model_size__n_params"], pilot_plan["dataset_size__n_tokens"])),
+...     predictors=("model_size__n_params", "dataset_size__n_tokens"),
+...     run_sd=0.02,
+...     eval_sd=0.03,
+...     seed=0,
+... )
+>>> next_runs = suggest_runs(
+...     fit(pilot, n_draws=200, seed=0), [1e20], chinchilla, n=4, candidate_budgets=[1e17, 1e18]
+... )
+>>> [(f"{b:.0e}", f"{n:.2g}") for b, n in next_runs.select("budget", "model_size__n_params").rows()]
+[('1e+17', '1.5e+08'), ('1e+17', '1.5e+08'), ('1e+17', '1.5e+08'), ('1e+17', '1.5e+08')]
+
+```
+
+All four at one point is not a bug. For a single quantity the best design has very few support points,
+and here the cheaper budget buys more per unit of compute. That is efficient if the law is right and
+fragile if it is not; `max_per_point=1` spreads the batch at some cost in efficiency.
+
+Simulated 60 times, three rounds of suggested runs at two budgets -- each round refit before the next --
+halved the error in `N*` a hundred times past the largest budget compared with a grid at the same
+budgets, with intervals half as wide and no more compute; coverage stayed near nominal. The criterion
+sees only the fitted law, so refit after every batch, and start from a grid so the isoFLOP check stays
+possible. `scaling-laws plan` and `scaling-laws suggest` do the same from the command line.
+
 ## Prediction semantics
 
 | `kind`    | answers                                                              |
