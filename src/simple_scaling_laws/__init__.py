@@ -33,6 +33,7 @@ from .artifact import FORMAT_VERSION, ArtifactError, package_version
 from .compare import ComparisonError, compare
 from .cost import CostError, CostModel, available_cost_forms, cost_model, fit_cost_model
 from .data import DataError, build_dataset
+from .isoflop import IsoflopError, IsoflopFit, fit_isoflop
 from .laws import LawError, available_laws
 from .metrics import MetricError
 from .model import PredictionError, ScalingLawModel
@@ -50,6 +51,8 @@ __all__ = [
     "CostError",
     "CostModel",
     "DataError",
+    "IsoflopError",
+    "IsoflopFit",
     "LawError",
     "MetricError",
     "Note",
@@ -66,6 +69,7 @@ __all__ = [
     "discover_schema",
     "fit",
     "fit_cost_model",
+    "fit_isoflop",
     "load",
     "load_config",
 ]

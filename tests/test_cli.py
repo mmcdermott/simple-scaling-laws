@@ -2,6 +2,7 @@
 
 import json
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -371,3 +372,45 @@ def test_allocate_fits_the_parameters_it_was_not_given(workspace, capsys):
     )
     assert code == 0
     assert "cost model: power: k=6, a=1, b=1" in capsys.readouterr().err
+
+
+def test_isoflop_profiles_sweeps_and_predicts_beyond_them(tmp_path, capsys):
+    from simple_scaling_laws.cost import cost_model
+
+    chinchilla = cost_model("power", k=6.0, a=1.0, b=1.0)
+    design = [
+        (float(n), float(chinchilla.dataset_size_for(c, n)))
+        for c in (1e12, 1e13, 1e14)
+        for n in np.sqrt(c / 60.0) * np.logspace(-0.6, 0.6, 6)
+    ]
+    runs = simulate_runs(
+        {"test_loss__ce": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.4}},
+        configurations=design,
+        run_sd=0.005,
+        eval_sd=0.005,
+    ).with_columns(
+        (6.0 * pl.col("model_size__n_params") * pl.col("dataset_size__n_subjects")).alias("compute__flops")
+    )
+    runs.write_parquet(tmp_path / "sweeps.parquet")
+    output = tmp_path / "optimum.csv"
+    code = main(
+        [
+            "isoflop",
+            str(tmp_path / "sweeps.parquet"),
+            "--cost",
+            "power:b=1",
+            "--budget",
+            "1e16",
+            "--draws",
+            "100",
+            "-o",
+            str(output),
+        ]
+    )
+    assert code == 0
+    table = pl.read_csv(output)
+    assert table["domain"].to_list() == ["extrapolation"]
+    assert "dataset_size__n_subjects__median" in table.columns
+    err = capsys.readouterr().err
+    assert "cost model: power: k=6, a=1, b=1" in err
+    assert "optimal model size grows as budget **" in err

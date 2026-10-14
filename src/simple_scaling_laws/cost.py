@@ -173,6 +173,16 @@ def available_cost_forms() -> dict[str, str]:
     return {name: form.description for name, form in _FORMS.items()}
 
 
+def available_cost_params() -> dict[str, tuple[str, ...]]:
+    """Return a mapping from cost-form name to its parameter names.
+
+    Examples:
+        >>> available_cost_params()["per-example"]
+        ('k', 'a', 'c')
+    """
+    return {name: form.param_names for name, form in _FORMS.items()}
+
+
 def _form(name: str) -> Any:
     if name not in _FORMS:
         raise CostError(f"Unknown cost form {name!r}; available: {', '.join(_FORMS)}")

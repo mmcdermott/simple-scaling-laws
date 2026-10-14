@@ -48,6 +48,7 @@ def simulate_runs(
     paired_test_sets: bool = True,
     predictors: Sequence[str] = DEFAULT_PREDICTORS,
     seed: int = 0,
+    configurations: Sequence[Sequence[float]] | None = None,
 ) -> pl.DataFrame:
     """Generate evaluation records from a known scaling law.
 
@@ -72,6 +73,9 @@ def simulate_runs(
             ``test_set_id`` values are reused across models) or on its own.
         predictors: The two predictor column names.
         seed: Seed for the random number generator.
+        configurations: Explicit ``(model_size, dataset_size)`` pairs to run, instead of the full grid
+            of ``model_sizes`` by ``dataset_sizes`` -- for designs that are not grids, such as runs
+            along curves of equal cost. One-value tuples run a model-size sweep.
 
     Returns:
         A Polars dataframe of evaluation rows.
@@ -132,6 +136,14 @@ def simulate_runs(
     eval_sds = _per_target(eval_sd, targets)
     model_sizes, dataset_sizes = tuple(model_sizes), tuple(dataset_sizes)
     axes = [model_sizes, dataset_sizes] if dataset_sizes else [model_sizes]
+    if configurations is not None:
+        configurations = [tuple(float(v) for v in config) for config in configurations]
+        widths = {len(config) for config in configurations}
+        if not configurations or len(widths) != 1 or widths - {1, 2}:
+            raise ValueError(
+                "configurations must be a non-empty list of (model_size,) or (model_size, dataset_size)"
+            )
+        axes = [()] * widths.pop()
     if len(predictors) < len(axes):
         raise ValueError(f"Need {len(axes)} predictor name(s) for this design, got {list(predictors)}")
     predictors = tuple(predictors[: len(axes)])
@@ -153,7 +165,7 @@ def simulate_runs(
     # Independent streams, so that changing the number of evaluation resamples does not also change
     # the realized training-run offsets. That keeps two designs genuinely comparable.
     shared_rng, run_rng, eval_rng = np.random.default_rng(seed).spawn(3)
-    configs = list(itertools.product(*axes))
+    configs = configurations if configurations is not None else list(itertools.product(*axes))
     reference = np.exp(np.log(np.array(configs, dtype=float)).mean(axis=0))
     shared = {
         target: shared_rng.normal(0.0, eval_sds[target] * np.sqrt(shared_eval_fraction), evaluations_per_run)
