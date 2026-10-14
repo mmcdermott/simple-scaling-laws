@@ -33,6 +33,7 @@ from .artifact import FORMAT_VERSION, ArtifactError, package_version
 from .compare import ComparisonError, compare
 from .cost import CostError, CostModel, available_cost_forms, cost_model, fit_cost_model
 from .data import DataError, build_dataset
+from .design import isoflop_grid, score_design, suggest_runs
 from .isoflop import IsoflopError, IsoflopFit, fit_isoflop
 from .laws import LawError, available_laws
 from .metrics import MetricError
@@ -70,8 +71,11 @@ __all__ = [
     "fit",
     "fit_cost_model",
     "fit_isoflop",
+    "isoflop_grid",
     "load",
     "load_config",
+    "score_design",
+    "suggest_runs",
 ]
 
 

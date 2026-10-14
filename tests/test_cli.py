@@ -414,3 +414,62 @@ def test_isoflop_profiles_sweeps_and_predicts_beyond_them(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "cost model: power: k=6, a=1, b=1" in err
     assert "optimal model size grows as budget **" in err
+
+
+def test_plan_then_suggest(tmp_path, capsys):
+    plan_file = tmp_path / "plan.csv"
+    arguments = [
+        "plan",
+        "--budget",
+        "1e15",
+        "--budget",
+        "1e16",
+        "--cost",
+        "power:k=6,a=1,b=1",
+        "--centre",
+        "20",
+    ]
+    assert main([*arguments, "-o", str(plan_file)]) == 0
+    plan = pl.read_csv(plan_file)
+    assert plan.height == 12
+    assert "total cost" in capsys.readouterr().err
+
+    configurations = [
+        (n, d)
+        for n, d, r in zip(
+            plan["model_size__n_params"], plan["dataset_size__n_tokens"], plan["runs"], strict=True
+        )
+        for _ in range(r)
+    ]
+    runs = simulate_runs(
+        {"test_loss__ce": {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.4}},
+        configurations=configurations,
+        predictors=("model_size__n_params", "dataset_size__n_tokens"),
+        runs_per_config=1,
+        run_sd=0.02,
+        eval_sd=0.03,
+    )
+    runs.write_parquet(tmp_path / "pilot.parquet")
+    artifact = tmp_path / "pilot.slaw"
+    assert (
+        main(["fit", str(tmp_path / "pilot.parquet"), "-o", str(artifact), "--draws", "100", "--quiet"]) == 0
+    )
+    suggestions = tmp_path / "next.csv"
+    code = main(
+        [
+            "suggest",
+            str(artifact),
+            "--target-budget",
+            "1e20",
+            "--candidate-budget",
+            "1e17",
+            "--cost",
+            "power:k=6,a=1,b=1",
+            "-n",
+            "3",
+            "-o",
+            str(suggestions),
+        ]
+    )
+    assert code == 0
+    assert pl.read_csv(suggestions)["budget"].to_list() == [1e17, 1e17, 1e17]

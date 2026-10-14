@@ -49,6 +49,7 @@ def simulate_runs(
     predictors: Sequence[str] = DEFAULT_PREDICTORS,
     seed: int = 0,
     configurations: Sequence[Sequence[float]] | None = None,
+    reference: Sequence[float] | None = None,
 ) -> pl.DataFrame:
     """Generate evaluation records from a known scaling law.
 
@@ -76,6 +77,10 @@ def simulate_runs(
         configurations: Explicit ``(model_size, dataset_size)`` pairs to run, instead of the full grid
             of ``model_sizes`` by ``dataset_sizes`` -- for designs that are not grids, such as runs
             along curves of equal cost. One-value tuples run a model-size sweep.
+        reference: The predictor values the parameters are normalized by. By default the geometric
+            mean of the design's configurations, as a fit would use -- which makes the truth relative to
+            the design, so that moving the design moves the truth with it. Fix it to state a truth in
+            raw units, the same for every design it is simulated on.
 
     Returns:
         A Polars dataframe of evaluation rows.
@@ -166,7 +171,12 @@ def simulate_runs(
     # the realized training-run offsets. That keeps two designs genuinely comparable.
     shared_rng, run_rng, eval_rng = np.random.default_rng(seed).spawn(3)
     configs = configurations if configurations is not None else list(itertools.product(*axes))
-    reference = np.exp(np.log(np.array(configs, dtype=float)).mean(axis=0))
+    if reference is None:
+        reference = np.exp(np.log(np.array(configs, dtype=float)).mean(axis=0))
+    else:
+        reference = np.asarray(reference, dtype=float)
+        if reference.shape != (len(axes),) or not np.all(reference > 0):
+            raise ValueError(f"reference must be {len(axes)} positive value(s), got {list(reference)}")
     shared = {
         target: shared_rng.normal(0.0, eval_sds[target] * np.sqrt(shared_eval_fraction), evaluations_per_run)
         for target in targets

@@ -25,6 +25,7 @@ from .api import fit as fit_model
 from .artifact import package_version
 from .compare import compare as compare_models
 from .cost import CostError, CostModel, available_cost_params, cost_model, fit_cost_model
+from .design import design_correlation, isoflop_grid, suggest_runs
 from .isoflop import IsoflopError, fit_isoflop
 from .laws import DEFAULT_LAW, available_laws
 from .model import DEFAULT_QUANTILES, PREDICTION_KINDS, ScalingLawModel
@@ -311,6 +312,43 @@ def build_parser() -> argparse.ArgumentParser:
     isoflop_parser.add_argument("--seed", type=int, default=0, help="Random seed (advanced).")
     isoflop_parser.add_argument("--output", "-o", help="Destination .parquet or .csv (default: stdout CSV).")
 
+    plan_parser = subparsers.add_parser(
+        "plan",
+        help="Lay out sweeps along curves of equal cost: one design for isoFLOP profiles and a joint law.",
+    )
+    plan_parser.add_argument("--budget", action="append", type=float, required=True, help="Repeatable.")
+    plan_parser.add_argument("--cost", required=True, help="FORM:name=value,..., e.g. power:k=6,a=1,b=1.")
+    plan_parser.add_argument(
+        "--centre",
+        required=True,
+        help="A guessed data-to-model ratio at the optimum (e.g. 20), or a .slaw artifact to centre on.",
+    )
+    plan_parser.add_argument("--points", type=int, default=6, help="Model sizes per budget (default: 6).")
+    plan_parser.add_argument(
+        "--half-width", type=float, default=1.2, help="Decades either side of the centre (default: 1.2)."
+    )
+    plan_parser.add_argument("--output", "-o", help="Destination .parquet or .csv (default: stdout CSV).")
+
+    suggest_parser = subparsers.add_parser(
+        "suggest", help="The next runs to train, to pin down the optimal model size at target budgets."
+    )
+    suggest_parser.add_argument("artifact", help="A .slaw artifact of the runs so far.")
+    suggest_parser.add_argument(
+        "--target-budget", action="append", type=float, required=True, help="Repeatable."
+    )
+    suggest_parser.add_argument(
+        "--candidate-budget",
+        action="append",
+        type=float,
+        help="Budgets you can run at. Repeatable; default: targets.",
+    )
+    suggest_parser.add_argument("--cost", required=True, help="FORM:name=value,..., e.g. power:k=6,a=1,b=1.")
+    suggest_parser.add_argument("-n", type=int, default=5, help="Runs to suggest (default: 5).")
+    suggest_parser.add_argument(
+        "--evaluations", type=int, default=1, help="Evaluations per new run (default: 1)."
+    )
+    suggest_parser.add_argument("--output", "-o", help="Destination .parquet or .csv (default: stdout CSV).")
+
     compare_parser = subparsers.add_parser(
         "compare", help="Compare two or more fitted systems at new scales."
     )
@@ -428,6 +466,48 @@ def _run_isoflop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_plan(args: argparse.Namespace) -> int:
+    """Execute the ``plan`` subcommand."""
+    cost = parse_cost(args.cost)
+    try:
+        centre: float | ScalingLawModel = float(args.centre)
+    except ValueError:
+        centre = ScalingLawModel.load(args.centre)
+    plan = isoflop_grid(
+        args.budget,
+        cost,
+        centre=centre,
+        points_per_budget=args.points,
+        half_width=(args.half_width, args.half_width),
+    )
+    print(
+        f"{plan['runs'].sum()} runs, total cost {float((plan['cost'] * plan['runs']).sum()):.3g}, "
+        f"log-predictor correlation {design_correlation(plan):.2f}",
+        file=sys.stderr,
+    )
+    write_frame(plan, args.output)
+    return 0
+
+
+def _run_suggest(args: argparse.Namespace) -> int:
+    """Execute the ``suggest`` subcommand."""
+    model = ScalingLawModel.load(args.artifact)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        plan = suggest_runs(
+            model,
+            args.target_budget,
+            parse_cost(args.cost),
+            n=args.n,
+            candidate_budgets=args.candidate_budget,
+            evaluations_per_run=args.evaluations,
+        )
+    for warning in caught:
+        print(f"warning: {warning.message}", file=sys.stderr)
+    write_frame(plan, args.output)
+    return 0
+
+
 def _cost_param_names(form: str) -> tuple[str, ...]:
     try:
         return tuple(available_cost_params()[form])
@@ -481,6 +561,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "predict": _run_predict,
         "allocate": _run_allocate,
         "isoflop": _run_isoflop,
+        "plan": _run_plan,
+        "suggest": _run_suggest,
         "compare": _run_compare,
         "inspect": _run_inspect,
     }
