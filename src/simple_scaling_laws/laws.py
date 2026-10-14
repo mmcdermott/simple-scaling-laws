@@ -200,22 +200,6 @@ class LawInstance:
         return _SPECS[self.law](self, None if log_x is None else np.asarray(log_x, dtype=float))
 
     @property
-    def interval_caveat(self) -> str | None:
-        """What is known to be wrong with this law's intervals, or ``None`` if nothing is.
-
-        The bootstrap was calibrated by simulation, and every law is held to that calibration in the
-        test suite. A law that does not meet it says so here, and the fit carries the statement as an
-        ``intervals_not_calibrated`` note, rather than leaving a caller to assume all laws are equal.
-
-        Examples:
-            >>> build_law("separable-power", ("model_size__n",), ()).interval_caveat is None
-            True
-            >>> "60-88%" in build_law("broken-power", ("model_size__n",), ()).interval_caveat
-            True
-        """
-        return _CAVEATS[self.law]
-
-    @property
     def display_names(self) -> tuple[str, ...]:
         """Parameter names in human reading order: offset, then (amplitude, exponent) pairs.
 
@@ -996,17 +980,6 @@ class _BrokenPower:
     """
 
     name: ClassVar[str] = "broken-power"
-    #: Measured, not assumed: forty replications each of a steepening and a turning-over curve, on
-    #: sweeps of eight and twelve scales with two runs per scale. A plain power law on the same
-    #: eight-scale sweep measured 92-95%, so the shortfall belongs to this law and not to the design.
-    #: Refitting every bootstrap draw from five starts instead of one changed nothing, which rules
-    #: out draws being trapped in the point estimate's basin.
-    interval_caveat: ClassVar[str] = (
-        "Nominal 95% prediction intervals for this law covered the truth only 60-88% of the time in "
-        "simulation (72-95% inside the observed range, 60-88% a decade beyond it). The residual "
-        "bootstrap does not capture how sharply the fitted curve depends on where the break is "
-        "placed. Treat the intervals as a lower bound on the uncertainty."
-    )
     description: ClassVar[str] = (
         "E + A * x**-c0 * (1 + (x / d)**(1 / f))**(-c1 * f) (one smooth change of slope; single predictor)"
     )
@@ -1130,7 +1103,6 @@ _MANY_DESIGNS = {name: law.many_designs for name, law in _LAWS.items()}
 _RAW_SCALE = {name: law.raw_scale for name, law in _LAWS.items()}
 _SPECS = {name: law.nonlinear_specs for name, law in _LAWS.items()}
 _MIN_LEVELS = {name: law.min_levels for name, law in _LAWS.items()}
-_CAVEATS = {name: getattr(law, "interval_caveat", None) for name, law in _LAWS.items()}
 
 #: Name of the law used when the user does not choose one.
 DEFAULT_LAW = _SeparablePower.name

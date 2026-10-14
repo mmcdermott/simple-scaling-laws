@@ -495,16 +495,6 @@ def fit(
             )
         )
     notes.extend(diagnostics_mod.design_notes(dataset, instance))
-    if instance.interval_caveat is not None:
-        notes.append(
-            Note(
-                "intervals_not_calibrated",
-                "warning",
-                f"Intervals from the {instance.law!r} law are narrower than they claim. "
-                f"{instance.interval_caveat}",
-                {"law": instance.law},
-            )
-        )
 
     fits: dict[str, TargetFit] = {}
     draws: dict[str, Uncertainty] = {}

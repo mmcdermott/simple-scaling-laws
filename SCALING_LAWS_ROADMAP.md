@@ -11,8 +11,8 @@ design record; where the implementation went a different way, this is how:
 | ------------------------------------ | ------------------------------------------------------------------------ |
 | 1. Interaction law                   | `separable-interaction-power`, any number of predictors                  |
 | 2. Kaplan-style joint scaling        | `kaplan-joint-power`, with `rho = alpha_N / alpha_D`                     |
-| 3. Shifted power / M3                | `shifted-separable-power`; needs four levels per predictor               |
-| 4. M4 / bounded small-data scaling   | `bounded-rational-power`, the `lambda = 1` case only                     |
+| 3. Shifted power (Zhai et al.)       | `shifted-separable-power`; needs four levels per predictor               |
+| 4. M4 / bounded small-data scaling   | `bounded-rational-power`, shape exponent fixed at 1 only                 |
 | 5. Broken Neural Scaling Laws        | `broken-power`, one break, one predictor                                 |
 | Internal refactor (`ParameterSpec`)  | `LawInstance.nonlinear_specs`: per-parameter bounds and seeds, law-owned |
 | Raw-scale conversion behind the law  | `LawInstance.raw_scale_params`                                           |
@@ -20,14 +20,11 @@ design record; where the implementation went a different way, this is how:
 
 Still open:
 
-- **Full M4** with a fitted `lambda`. It has no closed form, so it cannot use the exact linear solve
+- **Full M4** with a fitted shape exponent. It has no closed form, so it cannot use the exact linear solve
     that every current law relies on.
 - **An explicit small-scale limit.** `bounded-rational-power` estimates its plateau `I` from the
     data. Section 4's suggestion of letting a target declare it (chance level for AUROC, say) would
     make the law usable on experiments that do not reach far enough down to see the bend.
-- **Calibrated intervals for `broken-power`.** Its nominal 95% intervals cover 60-88%, which it
-    reports as `intervals_not_calibrated`. The residual bootstrap does not capture the dependence on
-    where the break is placed.
 - **A broken law in a model/data capacity ratio** (the end of section 5), and more than one break.
 
 ## Current laws

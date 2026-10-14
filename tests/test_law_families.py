@@ -30,8 +30,8 @@ SEPARABLE_TRUTH = {"E": 1.0, "A": 2.0, "alpha": 0.3, "B": 1.5, "beta": 0.25}
 N_REPLICATIONS = 15
 N_DRAWS = 120
 
-#: What the broken law's intervals actually achieve on this file's sweep; see its ``interval_caveat``.
-BROKEN_MEAN, BROKEN_MIN = 0.75, 0.65
+#: Floors on mean and worst-point prediction-interval coverage, those of ``test_coverage.py``.
+MEAN_COVERAGE, MIN_COVERAGE = 0.88, 0.8
 
 
 @dataclasses.dataclass(frozen=True)
@@ -44,10 +44,6 @@ class Case:
     contains_separable: bool = False
     #: Whether the law is defined over model size alone, so the experiment is a sweep, not a grid.
     single_predictor: bool = False
-    #: Floors on mean and worst-point prediction-interval coverage. The defaults are those of
-    #: ``test_coverage.py``; a law that cannot meet them must say so (``interval_caveat``).
-    mean_coverage: float = 0.88
-    min_coverage: float = 0.8
 
     @property
     def model_sizes(self):
@@ -99,15 +95,13 @@ CASES = {
         levels=4,
         contains_separable=True,
     ),
-    # Eight scales for six parameters on one axis. Its intervals are known to be too narrow, which
-    # the law declares; the floors here pin what was measured so that it cannot get quietly worse.
+    # Eight scales for six parameters on one axis: the design on which the bootstrap needed its
+    # noise floor (see ``uncertainty.corrected_residuals``) to stop under-covering.
     "broken-power": Case(
         {"E": 1.0, "A": 2.0, "c0": 0.15, "c1": 0.5, "d": 1.0, "f": 1.0},
         levels=8,
         contains_separable=True,
         single_predictor=True,
-        mean_coverage=BROKEN_MEAN,
-        min_coverage=BROKEN_MIN,
     ),
 }
 NESTING = sorted(name for name, case in CASES.items() if case.contains_separable)
@@ -175,10 +169,8 @@ def test_prediction_intervals_are_calibrated(law):
             truth <= predictions[f"{TARGET}__q975"].to_numpy()
         )
     coverage = hits / N_REPLICATIONS
-    assert coverage.mean() >= case.mean_coverage, f"mean coverage was {coverage.mean():.0%}"
-    assert coverage.min() >= case.min_coverage, f"coverage by point was {coverage}"
-    caveat = "intervals_not_calibrated" in {note.code for note in model.warnings}
-    assert caveat == (case.mean_coverage < 0.88), "a law below the calibration floor must declare it"
+    assert coverage.mean() >= MEAN_COVERAGE, f"mean coverage was {coverage.mean():.0%}"
+    assert coverage.min() >= MIN_COVERAGE, f"coverage by point was {coverage}"
 
 
 @pytest.mark.parametrize("law", sorted(CASES))
