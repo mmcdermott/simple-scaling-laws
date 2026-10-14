@@ -263,8 +263,9 @@ A power law is a straight line on log-log axes all the way down, and diverges at
 curves flatten toward something finite at the small end of an experiment, and those pre-asymptotic
 points drag a plain power law's exponent toward zero. `shifted-separable-power` puts a non-negative
 shift inside each power term, `E + A·(N + s_N)^-α + B·(D + s_D)^-β`, which gives the term a finite
-value at zero scale and leaves its large-scale behavior alone. This is the shifted form used by
-Bansal et al. (2022) and Zhai et al. (2022), catalogued as M3 by Caballero et al. (2022).
+value at zero scale and leaves its large-scale behavior alone. Its single-predictor form is the
+saturating law `a·(C + d)^-b + c` of Zhai et al. (2022). It is not the "M3" form of Bansal et al.
+(2022), `α·(D^-1 + C)^p`, which shifts the reciprocal of the scale and bounds the large end instead.
 
 The cost of ignoring a shift that is there is not subtle. Fitting the plain law to shifted data:
 
