@@ -606,10 +606,13 @@ class _ShiftedSeparablePower:
     the power gives the term a finite value ``A * s ** -alpha`` at zero scale and leaves its
     large-scale behavior untouched, so the pre-asymptotic points stop dragging the exponent down.
 
-    Shifted power laws of this kind are used for data scaling by Bansal et al. (2022), *Data Scaling
-    Laws in NMT*, and for model scaling by Zhai et al. (2022), *Scaling Vision Transformers*;
-    Caballero et al. (2022) catalogue the single-predictor form as **M3**. The separable sum over
-    several predictors is this package's arrangement of it.
+    The single-predictor form is the saturating law ``E = a * (C + d) ** -b + c`` that Zhai et al.
+    (2022), *Scaling Vision Transformers*, fit to error against compute, where the shift ``d`` gives a
+    zero-compute model a finite error. A related but different shifted form, ``alpha * (D ** -1 + C)
+    ** p`` from Bansal et al. (2022), *Data Scaling Laws in NMT*, shifts the *reciprocal* of the scale
+    and so bounds the large-scale end instead; that one is what Alabdulmohsin et al. (2022) and
+    Caballero et al. (2022) label **M3**, and it is not this law. The separable sum over several
+    predictors is this package's arrangement.
 
     **What it costs.** One more parameter per predictor, and a fourth level of every predictor: with
     only three there are two contrasts from which to learn an amplitude, an exponent *and* a shift.
