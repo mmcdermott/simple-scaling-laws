@@ -7,11 +7,17 @@
 [![Code Quality](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/code-quality-main.yaml/badge.svg)](https://github.com/mmcdermott/simple-scaling-laws/actions/workflows/code-quality-main.yaml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/mmcdermott/simple-scaling-laws#license)
 
-> **Warning: internal research tooling, largely AI-generated.** This package was written primarily by an AI
-> coding agent to support internal experiments in the McDermott Health AI Lab. It is public so it can
-> be installed and cited easily, not because it is a hardened, externally supported library. Read the
-> statistics section before you trust a number from it, check the warnings it emits, and treat its
-> extrapolations as triage signal rather than evidence.
+> **⚠️ WARNING: THIS ENTIRE REPOSITORY IS AI-GENERATED AND HAS NOT BEEN REVIEWED BY A HUMAN. ⚠️**
+>
+> Every line of code, every test, every statistical choice and all of this documentation was written
+> by an AI coding agent, to support internal experiments in the McDermott Health AI Lab. No person
+> has checked the code, the mathematics, the simulation results quoted here or the citations. It is
+> public so it can be installed easily, not because it is a vetted or supported library.
+>
+> Do not rely on its output for anything that matters without checking it yourself. Treat its
+> intervals and extrapolations as triage signal, not evidence; read its warnings; and where the docs
+> below say a choice is **package-specific** rather than from the literature, assume it is unproven
+> beyond the simulations described.
 
 Fit empirical scaling laws to repeated ML training/evaluation records, with conservative uncertainty,
 and predict performance at model or dataset sizes you have not run yet.
@@ -1008,6 +1014,102 @@ True
 `model.fits`, `model.draws`, `model.diagnostics`, `model.observed_domain`, `model.predictors` and
 `model.warnings` are all exposed. There is no plotting here by design: anything you would want to
 draw can be built from `model.predict()`.
+
+## References
+
+What the package does is built from published methods, but several pieces are its own. Each is
+labelled here; a **package-specific** choice is supported only by the simulations described in this
+README and the module docstrings, which no human has reviewed.
+
+**Scaling-law forms.**
+
+| Law                       | Source                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `separable-power`         | Hoffmann et al. (2022); Hestness et al. (2017)                                  |
+| `multiplicative-power`    | Package-specific (a single joint power term)                                    |
+| `shifted-separable-power` | Zhai et al. (2022); the separable sum is package-specific                       |
+| `kaplan-joint-power`      | Kaplan et al. (2020), eq. 1.5, with an added floor `E`                          |
+| `skaling-joint-power`     | Videau et al. (2026)                                                            |
+| `bounded-rational-power`  | Alabdulmohsin, Neyshabur & Zhai (2022), M4 with its shape exponent fixed at one |
+| `broken-power`            | Caballero et al. (2022), one break                                              |
+
+**Fitting and uncertainty.** Variable projection with grid seeding is the method Czech et al. (2026)
+recommend for Chinchilla's "Approach 3". The wild cluster bootstrap is from Cameron, Gelbach & Miller
+(2008), with Webb's (2023) six-point weights for few clusters and the HC2 leverage correction of
+MacKinnon & White (1985). The further small-sample corrections and the noise floor for high-leverage
+configurations are package-specific, calibrated by the coverage simulations in
+`tests/test_coverage.py` and `tests/test_law_families.py`.
+
+**Cost laws.**
+
+- **`power`, `k·N·D` with `k = 6`:** the training-FLOP estimate of Kaplan et al. (2020) and
+    Hoffmann et al. (2022).
+- **`per-example`, `D·(k·N^a + c)`:** after Kaplan et al.'s (2020) per-token FLOPs, `2N` plus an
+    attention term that grows with context length. Treating that term as a constant overhead `c` is
+    package-specific.
+- **Fitting a cost law** to recorded per-run compute is ordinary least squares on the log scale.
+- **Recording FLOPs:** PyTorch's `torch.utils.flop_counter.FlopCounterMode`.
+
+**Compute-optimal allocation.**
+
+- **`optimal_allocation`:** Chinchilla's Approach 3 (Hoffmann et al., 2022). Besiroglu et al. (2024)
+    and Czech et al. (2026) report why its parametric fit is preferable to Approach 2 when the law is
+    right. Taking intervals by minimizing every bootstrap draw is package-specific.
+- **`fit_isoflop`:** Chinchilla's Approach 2 (Hoffmann et al., 2022), also used by PaLM 2 (Anil et
+    al., 2023) and Llama 3 (Grattafiori et al., 2024). Czech et al. (2026) show that its parabola
+    biases the optimum when sweeps are wide, off-centre, or the valley is asymmetric (`α ≠ β`); this
+    package found the same in simulation. **The cubic profile used by default is package-specific:**
+    Czech et al. do not test it (their remedy is Approach 3), and it is supported only by the coverage
+    simulations quoted above. Pass `degree=2` for the published method. Bootstrapping through both
+    stages is package-specific.
+
+**Experiment design.**
+
+- **Sweeps along curves of equal cost:** Chinchilla's isoFLOP design (Hoffmann et al., 2022).
+- **Using one grid for both frontiers, and the ±1.2-decade default width:** package-specific, from the
+    `score_design` simulations. Narrow sweeps' sensitivity to a mis-centred optimum agrees with Czech et
+    al. (2026).
+- **Replicate runs:** Choshen, Zhang & Andreas (2025) find seed variance large enough that several
+    small models can be worth more than one large one, which supports them. They also find fitting to
+    intermediate checkpoints helps; this package deliberately does not, keeping one observation per
+    completed run, which isoFLOP profiles in particular require.
+- **`score_design`:** standard Monte Carlo evaluation of a design.
+- **`suggest_runs`:** greedy, variance-reducing Bayesian experimental design (Chaloner & Verdinelli,
+    1995).
+    - Greedy selection by variance reduction is analysed by Krause, Singh & Guestrin (2008) and Das &
+        Kempe (2008).
+    - Using an ensemble's covariance to choose observations follows the ensemble-transform Kalman filter
+        of Bishop, Etherton & Majumdar (2001).
+    - Reading bootstrap draws as an approximate posterior follows Newton & Raftery (1994) and Efron
+        (2012).
+    - That an optimal design for one quantity puts weight on few points is Elfving's (1952).
+    - Applying all this to choosing scaling-law runs, and the validation simulations, are
+        package-specific.
+
+**Sources.**
+
+- Alabdulmohsin, I., Neyshabur, B. & Zhai, X. (2022). Revisiting Neural Scaling Laws in Language and Vision. *NeurIPS*. arXiv:2209.06640.
+- Anil, R. et al. (2023). PaLM 2 Technical Report. arXiv:2305.10403.
+- Besiroglu, T., Erdil, E., Barnett, M. & You, J. (2024). Chinchilla Scaling: A replication attempt. arXiv:2404.10102.
+- Bishop, C. H., Etherton, B. J. & Majumdar, S. J. (2001). Adaptive sampling with the ensemble transform Kalman filter. Part I: Theoretical aspects. *Monthly Weather Review* 129(3), 420-436.
+- Caballero, E., Gupta, K., Rish, I. & Krueger, D. (2022). Broken Neural Scaling Laws. arXiv:2210.14891.
+- Cameron, A. C., Gelbach, J. B. & Miller, D. L. (2008). Bootstrap-based improvements for inference with clustered errors. *Review of Economics and Statistics* 90(3), 414-427.
+- Chaloner, K. & Verdinelli, I. (1995). Bayesian experimental design: a review. *Statistical Science* 10(3), 273-304.
+- Choshen, L., Zhang, Y. & Andreas, J. (2025). A Hitchhiker's Guide to Scaling Law Estimation. *ICML*. arXiv:2410.11840.
+- Czech, E., Xu, Z., Elmatad, Y., Wang, Y. & Held, W. (2026). Problems with Chinchilla Approach 2: Systematic Biases in IsoFLOP Parabola Fits. arXiv:2603.22339.
+- Das, A. & Kempe, D. (2008). Algorithms for subset selection in linear regression. *STOC*.
+- Efron, B. (2012). Bayesian inference and the parametric bootstrap. *Annals of Applied Statistics* 6(4), 1971-1997.
+- Elfving, G. (1952). Optimum allocation in linear regression theory. *Annals of Mathematical Statistics* 23(2), 255-262.
+- Grattafiori, A. et al. (2024). The Llama 3 Herd of Models. arXiv:2407.21783.
+- Hestness, J. et al. (2017). Deep Learning Scaling is Predictable, Empirically. arXiv:1712.00409.
+- Hoffmann, J. et al. (2022). Training Compute-Optimal Large Language Models. arXiv:2203.15556.
+- Kaplan, J. et al. (2020). Scaling Laws for Neural Language Models. arXiv:2001.08361.
+- Krause, A., Singh, A. & Guestrin, C. (2008). Near-optimal sensor placements in Gaussian processes. *JMLR* 9, 235-284.
+- MacKinnon, J. G. & White, H. (1985). Some heteroskedasticity-consistent covariance matrix estimators with improved finite sample properties. *Journal of Econometrics* 29(3), 305-325.
+- Newton, M. A. & Raftery, A. E. (1994). Approximate Bayesian inference with the weighted likelihood bootstrap. *JRSS B* 56(1), 3-48.
+- Videau, M., Youbi-Idrissi, B., Lopez-Paz, D. & Ahuja, K. (2026). Skaling: Chinchilla's Exponents Meet Kaplan's Coupling. arXiv:2608.07222.
+- Webb, M. D. (2023). Reworking wild bootstrap-based inference for clustered errors. *Canadian Journal of Economics* 56(3), 839-858.
+- Zhai, X., Kolesnikov, A., Houlsby, N. & Beyer, L. (2022). Scaling Vision Transformers. *CVPR*. arXiv:2106.04560.
 
 ## Development
 

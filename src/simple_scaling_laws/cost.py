@@ -21,6 +21,13 @@ Measuring beats declaring wherever it is possible. ``D`` here must be what a run
 or examples seen, all epochs included -- and a run that stops early processes less than its schedule
 said. Logged compute captures that; a formula written down in advance does not.
 
+**Sources.** The ``6 * N * D`` training-FLOP estimate is from Kaplan et al. (2020), *Scaling Laws for
+Neural Language Models*, and Hoffmann et al. (2022), *Training Compute-Optimal Large Language Models*. The
+``per-example`` form follows Kaplan et al.'s per-token FLOPs, ``2N`` plus an attention term that grows with
+context length; collapsing that term into a constant overhead ``c`` is this package's simplification.
+Fitting a cost law to recorded compute is ordinary least squares, and is package-specific only in being
+offered at all. See the README's References section for full citations.
+
 Examples:
     >>> chinchilla = cost_model("power", k=6.0, a=1.0, b=1.0)
     >>> f"{float(chinchilla(1e9, 2e10)):.3g}"

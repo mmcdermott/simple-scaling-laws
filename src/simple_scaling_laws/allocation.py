@@ -15,6 +15,12 @@ trustworthy when it is large.
 What this cannot tell you is whether the law holds out at the optimum. An optimum outside the observed range
 is an extrapolation of the law's shape, and is flagged as such; the law-free check is the isoFLOP profile fit
 in :mod:`simple_scaling_laws.isoflop`.
+
+**Sources.** Minimizing a fitted law along the iso-cost curve is Chinchilla's Approach 3 (Hoffmann et al.,
+2022). Besiroglu et al. (2024), *Chinchilla Scaling: A replication attempt*, and Czech et al. (2026),
+*Problems with Chinchilla Approach 2*, argue for it over Approach 2 when the law is right; Czech et al.
+recommend fitting it by variable projection with grid initialization, which is how this package fits every
+law. Taking intervals by minimizing each bootstrap draw is package-specific.
 """
 
 from __future__ import annotations

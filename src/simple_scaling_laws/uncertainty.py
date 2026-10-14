@@ -26,6 +26,12 @@ variances are estimated separately, so the share a configuration's leverage abso
 floor puts it back. It never shrinks a configuration's pseudo-residual, so it pushes intervals wider,
 not narrower; see :func:`corrected_residuals` for what it measured.
 
+The wild cluster bootstrap is from Cameron, Gelbach & Miller (2008), *Review of Economics and Statistics*
+90:414-427; the six-point weights are Webb's (2023), *Canadian Journal of Economics* 56:839-858; the HC2
+leverage correction is MacKinnon & White's (1985), *Journal of Econometrics* 29:305-325. The cluster
+degrees-of-freedom and tail corrections and the noise floor below are package-specific, calibrated by
+simulation.
+
 When the fit has no residual degrees of freedom left, no wild bootstrap is possible; the package
 falls back to a parametric bootstrap from the estimated variance components and says so in a note.
 

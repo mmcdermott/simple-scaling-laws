@@ -25,6 +25,19 @@ shape it:
 :func:`suggest_runs` picks the next runs once some exist, to shrink the uncertainty in the quantities
 you care about -- the optimal model size at the budgets you will eventually spend -- as cheaply as
 possible. See its docstring for the approximation it rests on and what was measured.
+
+**Sources, and what is not from them.** Sweeps along curves of equal cost are Chinchilla's isoFLOP design
+(Hoffmann et al., 2022). Using one grid for both frontiers, the default width and the simulations behind it
+are package-specific. :func:`score_design` is ordinary Monte Carlo evaluation of a design.
+:func:`suggest_runs` is greedy Bayesian experimental design (Chaloner & Verdinelli, 1995, *Statistical
+Science* 10:273-304), with greedy variance reduction as analysed by Krause, Singh & Guestrin (2008, *JMLR*
+9:235-284) and Das & Kempe (2008, *STOC*). Its use of an ensemble's covariance follows the
+ensemble-transform Kalman filter of Bishop, Etherton & Majumdar (2001, *Monthly Weather Review*
+129:420-436). Its reading of bootstrap draws as a posterior follows Newton & Raftery (1994, *JRSS B*
+56:3-48) and Efron (2012, *Annals of Applied Statistics* 6:1971-1997). That a batch concentrates on few
+points is Elfving's (1952, *Annals of Mathematical Statistics* 23:255-262) result. Applying these to
+scaling-law runs is package-specific, and validated only by the simulations described in
+:func:`suggest_runs`.
 """
 
 from __future__ import annotations

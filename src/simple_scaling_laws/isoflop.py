@@ -30,6 +30,15 @@ gave intervals about twice as wide at moderate noise, and its minimum is less st
 brackets it (reported as ``isoflop_unstable_minimum``). ``degree=2`` is there for a valley known to be
 symmetric, or for comparison with published Approach-2 numbers.
 
+**Sources, and what is not from them.** The two-stage procedure is Chinchilla's Approach 2 (Hoffmann et al.,
+2022), also used by PaLM 2 (Anil et al., 2023) and Llama 3 (Grattafiori et al., 2024). The parabola's bias
+is documented by Czech et al. (2026), *Problems with Chinchilla Approach 2: Systematic Biases in IsoFLOP
+Parabola Fits* (arXiv:2603.22339), who attribute it to grid width, off-centre sampling and asymmetry
+(``alpha != beta``) -- the same three effects simulated here. **The cubic default is this package's own
+remedy:** Czech et al. do not test higher-degree profiles (they recommend Approach 3 instead), and the cubic
+is supported only by the simulations above, which no human has reviewed. Bootstrapping through both stages
+is likewise package-specific.
+
 **Design requirements.** Each point must be a run trained to its own budget, from scratch -- not an
 intermediate checkpoint of a longer run -- which is already the package's one-observation-per-run rule.
 Within one budget, model size and data move together exactly, by design. Each profile needs at least
