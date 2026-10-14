@@ -15,7 +15,7 @@ from .laws import EXPONENT_KINDS, LawInstance
 from .metrics import MetricKind, from_fitting_scale, scale_description
 from .notes import Note
 from .schema import Schema
-from .uncertainty import Uncertainty, from_arrays, to_arrays
+from .uncertainty import Uncertainty, from_arrays, target_seed, to_arrays
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
@@ -71,6 +71,39 @@ def quantile_suffix(q: float) -> str:
         if abs(q - value) < 5e-4:
             return name
     return "q" + f"{q:.3f}".split(".")[1]
+
+
+def quantile_suffixes(quantiles: Sequence[float]) -> list[str]:
+    """The column suffix of each requested quantile, refusing two that would share a column.
+
+    Args:
+        quantiles: Quantiles in ``[0, 1]``.
+
+    Returns:
+        One suffix per quantile, in order.
+
+    Raises:
+        ValueError: If two quantiles agree to three decimal places, so that one column would
+            silently overwrite the other.
+
+    Examples:
+        >>> quantile_suffixes([0.025, 0.5, 0.975])
+        ['q025', 'median', 'q975']
+        >>> quantile_suffixes([0.025, 0.0251])
+        Traceback (most recent call last):
+        ...
+        ValueError: Quantiles [0.025, 0.0251] would share the column suffix 'q025'; quantiles are
+        distinguished to three decimal places.
+    """
+    suffixes = [quantile_suffix(q) for q in quantiles]
+    for suffix in dict.fromkeys(suffixes):
+        clashing = [q for q, s in zip(quantiles, suffixes, strict=True) if s == suffix]
+        if len(clashing) > 1:
+            raise ValueError(
+                f"Quantiles {clashing} would share the column suffix {suffix!r}; quantiles are "
+                "distinguished to three decimal places."
+            )
+    return suffixes
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -504,6 +537,10 @@ class ScalingLawModel:
         quantiles = [float(q) for q in quantiles]
         if any(not 0 <= q <= 1 for q in quantiles):
             raise PredictionError(f"quantiles must lie in [0, 1], got {quantiles}")
+        try:
+            suffixes = quantile_suffixes(quantiles)
+        except ValueError as error:
+            raise PredictionError(str(error)) from None
 
         frame = self.prepare_points(points)
         raw = frame.select(self._domain_predictors).to_numpy().astype(float)
@@ -519,7 +556,7 @@ class ScalingLawModel:
                 stacklevel=2,
             )
 
-        rng = np.random.default_rng(self._manifest.get("seed", 0) if seed is None else seed)
+        base_seed = self._manifest.get("seed", 0) if seed is None else seed
         columns: dict[str, Any] = {
             POINT_ID: frame[POINT_ID],
             **{name: frame[name] for name in self._domain_predictors},
@@ -527,9 +564,10 @@ class ScalingLawModel:
             "extrapolation_distance": distance,
         }
         for target in requested:
+            rng = np.random.default_rng(target_seed(base_seed, target))
             values = self.target_draws(target, log_x, kind=kind, rng=rng)
-            for q in quantiles:
-                columns[f"{target}__{quantile_suffix(q)}"] = np.quantile(values, q, axis=0)
+            for q, suffix in zip(quantiles, suffixes, strict=True):
+                columns[f"{target}__{suffix}"] = np.quantile(values, q, axis=0)
         return pl.DataFrame(columns)
 
     def prepare_points(self, points: Any) -> pl.DataFrame:

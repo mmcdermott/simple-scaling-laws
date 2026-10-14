@@ -39,6 +39,7 @@ seconds, which is a bad trade for a package whose other goal is being small enou
 from __future__ import annotations
 
 import dataclasses
+import zlib
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -106,6 +107,32 @@ class Uncertainty:
     def quantiles(self, q: float | np.ndarray) -> np.ndarray:
         """Quantiles of each parameter across draws."""
         return np.quantile(self.params, q, axis=0)
+
+
+def target_seed(seed: int, target: str) -> int:
+    """The random seed used for anything random about one target: its bootstrap, its predictions.
+
+    Derived from the target's *name* rather than its position, so that the same target draws the
+    same cluster multipliers in two different experiments even when those experiments report
+    different sets of metrics. That is what lets :func:`simple_scaling_laws.compare` difference two
+    fits' draws and get the variance of the difference right rather than the sum of two variances.
+    It is also why a target's ``new-run`` predictions and correlation interval do not change when
+    other targets are added to or dropped from a request.
+
+    Args:
+        seed: The experiment-level seed.
+        target: The target column name.
+
+    Returns:
+        A seed in ``[0, 2**32)``.
+
+    Examples:
+        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_loss__ce")
+        True
+        >>> target_seed(0, "test_loss__ce") == target_seed(0, "test_metric__auroc")
+        False
+    """
+    return (seed + zlib.crc32(target.encode())) % (2**32)
 
 
 def _webb_signs(rng: np.random.Generator, n_clusters: int, n_draws: int) -> np.ndarray:
@@ -327,16 +354,19 @@ def _run_sd_draws(
     per_run_var: np.ndarray,
     n_draws: int,
     fallback: float,
+    from_replicates: bool = True,
 ) -> np.ndarray:
     """Draws of the run-level standard deviation.
 
-    When replicate runs exist, configurations are resampled with replacement and their sum-of-squares
-    contributions recombined -- a nonparametric bootstrap of the pooled estimate that assumes nothing about
-    the shape of the run-to-run distribution. Otherwise the point estimate is repeated, since there is no
-    replicate information to resample.
+    When the point estimate came from replicate runs, configurations are resampled with replacement and
+    their sum-of-squares contributions recombined -- a nonparametric bootstrap of the pooled estimate that
+    assumes nothing about the shape of the run-to-run distribution. Otherwise the point estimate is
+    repeated. That includes the case where a few replicates exist but too few to be trusted, and the fit
+    used the residual scatter instead: resampling those replicates anyway would describe a different
+    estimate from the one reported, and one near-duplicate pair would put every draw at zero.
     """
     sums, corrections, dofs = _config_variance_parts(mean, config_index, per_run_var)
-    if sums.size == 0:
+    if sums.size == 0 or not from_replicates:
         return np.full(n_draws, fallback, dtype=float)
     index = rng.integers(0, sums.size, size=(n_draws, sums.size))
     total = sums[index].sum(axis=1) - corrections[index].sum(axis=1)
@@ -356,6 +386,7 @@ def bootstrap(
     n_draws: int = DEFAULT_DRAWS,
     seed: int = 0,
     target: str = "target",
+    run_sd_from_replicates: bool = True,
 ) -> Uncertainty:
     """Estimate parameter uncertainty by wild cluster bootstrap over configurations.
 
@@ -372,6 +403,8 @@ def bootstrap(
         n_draws: Number of draws to retain.
         seed: Seed for the random number generator.
         target: Name of the target, used only in warning messages.
+        run_sd_from_replicates: Whether ``run_sd`` was estimated from replicate runs, and so may be
+            resampled from them; otherwise its draws repeat it.
 
     Returns:
         The :class:`Uncertainty` for this target.
@@ -489,7 +522,7 @@ def bootstrap(
         )
     return Uncertainty(
         params=draws,
-        run_sd=_run_sd_draws(rng, y, config_index, per_run_var, n_draws, run_sd),
+        run_sd=_run_sd_draws(rng, y, config_index, per_run_var, n_draws, run_sd, run_sd_from_replicates),
         run_deviations=deviations,
         method=method,
         n_failed=n_failed,

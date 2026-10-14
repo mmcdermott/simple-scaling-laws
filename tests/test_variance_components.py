@@ -145,3 +145,29 @@ def test_new_run_predictions_are_wider_than_mean_predictions():
     new_width = float(new_run["test_loss__ce__q975"][0] - new_run["test_loss__ce__q025"][0])
     assert new_width > mean_width
     assert new_width > 2 * model.fits["test_loss__ce"].run_sd
+
+
+def test_run_sd_draws_follow_the_estimate_the_fit_chose():
+    """With too few replicate degrees of freedom the residual estimate is used, and so must its draws be.
+
+    One near-duplicate replicate pair is not enough to estimate run-to-run variance (the fit falls back to the
+    residual scatter), but resampling that pair alone used to give every draw a run SD of zero -- so ``new-
+    run`` predictions silently carried no training noise at all.
+    """
+    frame = simulate_runs(
+        {"test_loss__ce": TRUE_LOSS},
+        runs_per_config=1,
+        evaluations_per_run=4,
+        run_sd=0.05,
+        eval_sd=0.02,
+        seed=0,
+    )
+    first = frame.filter(pl.col("training_run_id") == frame["training_run_id"][0])
+    duplicate = first.with_columns(
+        pl.lit("extra").alias("training_run_id"), (pl.col("test_loss__ce") + 0.001).alias("test_loss__ce")
+    )
+    model = fit(pl.concat([frame, duplicate]), n_draws=200, seed=0)
+    components = model.fits["test_loss__ce"].variance_components
+    assert components["source"] == "residual"
+    assert model.fits["test_loss__ce"].run_sd > 0.01
+    assert np.all(model.draws["test_loss__ce"].run_sd == pytest.approx(model.fits["test_loss__ce"].run_sd))

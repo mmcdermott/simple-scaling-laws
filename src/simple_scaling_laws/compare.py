@@ -46,7 +46,7 @@ import numpy as np
 import polars as pl
 
 from .metrics import HIGHER
-from .model import DEFAULT_QUANTILES, POINT_ID, PREDICTION_KINDS, PredictionError, quantile_suffix
+from .model import DEFAULT_QUANTILES, POINT_ID, PREDICTION_KINDS, PredictionError, quantile_suffixes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
@@ -216,6 +216,10 @@ def compare(
     quantiles = [float(q) for q in quantiles]
     if any(not 0 <= q <= 1 for q in quantiles):
         raise ComparisonError(f"quantiles must lie in [0, 1], got {quantiles}")
+    try:
+        suffixes = quantile_suffixes(quantiles)
+    except ValueError as error:
+        raise ComparisonError(str(error)) from None
 
     paired, reason = _pairing_status(named, target)
     if not paired:
@@ -287,12 +291,12 @@ def compare(
             "direction": np.full(n_points, direction),
             "p_best": p_best[position],
         }
-        for q in quantiles:
-            columns[f"value__{quantile_suffix(q)}"] = np.quantile(values[name], q, axis=0)
+        for q, suffix in zip(quantiles, suffixes, strict=True):
+            columns[f"value__{suffix}"] = np.quantile(values[name], q, axis=0)
         if reference is not None:
             difference = values[name] - values[reference]
-            for q in quantiles:
-                columns[f"difference__{quantile_suffix(q)}"] = np.quantile(difference, q, axis=0)
+            for q, suffix in zip(quantiles, suffixes, strict=True):
+                columns[f"difference__{suffix}"] = np.quantile(difference, q, axis=0)
             better = difference < 0 if direction != HIGHER else difference > 0
             columns["p_better_than_reference"] = better.mean(axis=0)
         rows.append(pl.DataFrame(columns))

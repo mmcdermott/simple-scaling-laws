@@ -706,8 +706,9 @@ That calibration was measured on `separable-power`. Every other law is held to t
 (`tests/test_law_families.py`), and its section above reports what it measured.
 
 **Correlations are computed across runs.** Loss/metric correlations use run-level means, with
-intervals from resampling configurations. The naive evaluation-row correlation is reported alongside
-purely so its inflation is visible:
+intervals from resampling configurations. The naive evaluation-row correlation is reported alongside,
+with its row count, purely so the inflated sample size is visible -- its estimate can land close to the
+run-level one while claiming five times the evidence:
 
 ```pycon
 >>> correlations = model.metric_correlations()
@@ -717,7 +718,7 @@ purely so its inflation is visible:
 ...         f"(evaluation-row r={row['evaluation_row_pearson']:.3f} over "
 ...         f"{row['n_evaluation_rows']} rows)"
 ...     )
-test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.970 over 90 rows)
+test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.971 over 90 rows)
 
 ```
 
