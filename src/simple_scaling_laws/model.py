@@ -158,6 +158,9 @@ def raw_scale_params(law: LawInstance, params: np.ndarray, reference: np.ndarray
     choice, but amplitudes are: an amplitude ``A`` on normalized predictors corresponds to
     ``A * reference ** alpha`` on raw ones. Both are reported so neither reading is ambiguous.
 
+    The algebra differs by law family, so the conversion itself lives with the law; see
+    :meth:`simple_scaling_laws.laws.LawInstance.raw_scale_params`.
+
     Args:
         law: The instantiated law.
         params: The fitted parameter vector.
@@ -173,15 +176,7 @@ def raw_scale_params(law: LawInstance, params: np.ndarray, reference: np.ndarray
         >>> round(raw["A"], 4), round(raw["alpha"], 4)
         (20.0, 0.5)
     """
-    values = dict(zip(law.param_names, (float(v) for v in params), strict=True))
-    exponents = params[law.n_linear :]
-    scales = {"multiplicative-power": float(np.prod(reference**exponents))}
-    for i, name in enumerate(law.param_names[1 : law.n_linear]):
-        if law.law == "separable-power":
-            values[name] = values[name] * float(reference[i] ** exponents[i])
-        else:
-            values[name] = values[name] * scales[law.law]
-    return values
+    return law.raw_scale_params(params, reference)
 
 
 class ScalingLawModel:

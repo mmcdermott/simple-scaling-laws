@@ -44,6 +44,19 @@ COLLINEARITY_THRESHOLD = 0.95
 #: is uninformative however large the estimate.
 WEAK_IDENTIFICATION_WIDTH = 0.5
 
+#: Condition number of the fitted curve's column-scaled Jacobian above which the fit is reported as
+#: ill-conditioned. The threshold was read off simulation rather than chosen for roundness: laws
+#: fitted to data they can identify measured between 25 and 160 across 3x3 to 4x4 designs, while the
+#: interaction law fitted to data containing no interaction -- where its joint term can only alias
+#: the separable ones -- had a median above ten million. A thousand sits in the empty decade
+#: between the two populations.
+ILL_CONDITIONING_THRESHOLD = 1e3
+
+#: A parameter is named as taking part in an ill-conditioned direction when its loading on that
+#: direction is at least this large. The direction is a unit vector, so with eight parameters a
+#: loading this size is well above an even share.
+ILL_CONDITIONING_LOADING = 0.3
+
 #: Ratio of residual-based to replicate-based run variance above which lack of fit is reported.
 LACK_OF_FIT_RATIO = 4.0
 
@@ -223,6 +236,61 @@ def design_notes(dataset: Dataset, law: LawInstance) -> list[Note]:
     return notes
 
 
+def conditioning(
+    law: LawInstance, params: np.ndarray, log_x: np.ndarray, weights: np.ndarray
+) -> tuple[float, tuple[str, ...]]:
+    """How sharply the data pin down a fitted parameter vector, and which parameters are loose.
+
+    The curve's Jacobian says how the fitted values respond to each parameter. When some combination
+    of parameters can move with almost no response, the data cannot tell those parameters apart: the
+    optimizer returns *a* point on a flat ridge, and which one is an accident of where it started.
+    The curve itself is still pinned down wherever there are data, which is why this is worth
+    separating from a bad fit -- the prediction survives, the individual parameters do not.
+
+    Columns are scaled to unit length first, so the number measures collinearity between parameters
+    rather than the arbitrary difference in units between an offset and an exponent.
+
+    Args:
+        law: The instantiated law.
+        params: The fitted parameter vector.
+        log_x: Log-normalized predictors, one row per observation.
+        weights: Fitting weights.
+
+    Returns:
+        The condition number -- ``inf`` when some direction has no effect at all -- and the names of
+        the parameters that make up the least-determined direction.
+
+    Examples:
+        A separable law on a full grid is comfortably identified:
+
+        >>> from .laws import build_law
+        >>> law = build_law("separable-power", ["model_size__n"], ["dataset_size__d"])
+        >>> grid = np.log(np.array([[n, d] for n in (0.1, 1.0, 10.0) for d in (0.1, 1.0, 10.0)]))
+        >>> number, _ = conditioning(law, np.array([1.0, 2.0, 1.5, 0.3, 0.25]), grid, np.ones(9))
+        >>> bool(number < ILL_CONDITIONING_THRESHOLD)
+        True
+
+        With a zero amplitude the matching exponent does nothing, and is named:
+
+        >>> conditioning(law, np.array([1.0, 0.0, 1.5, 0.3, 0.25]), grid, np.ones(9))
+        (inf, ('alpha',))
+    """
+    jacobian = np.sqrt(weights)[:, None] * law.jacobian(params, log_x)
+    norms = np.linalg.norm(jacobian, axis=0)
+    dead = norms <= np.finfo(float).tiny
+    if dead.any():
+        return float("inf"), tuple(name for name, flag in zip(law.param_names, dead, strict=True) if flag)
+    _, singular, directions = np.linalg.svd(jacobian / norms, full_matrices=False)
+    loose = tuple(
+        name
+        for name, loading in zip(law.param_names, np.abs(directions[-1]), strict=True)
+        if loading >= ILL_CONDITIONING_LOADING
+    )
+    if singular[-1] <= singular[0] * np.finfo(float).eps:
+        return float("inf"), loose
+    return float(singular[0] / singular[-1]), loose
+
+
 def fit_notes(
     target: str,
     law: LawInstance,
@@ -230,6 +298,8 @@ def fit_notes(
     bounds: Bounds,
     uncertainty: Uncertainty,
     components: VarianceComponents,
+    log_x: np.ndarray | None = None,
+    weights: np.ndarray | None = None,
 ) -> list[Note]:
     """Warnings about one target's fitted curve.
 
@@ -240,6 +310,9 @@ def fit_notes(
         bounds: The parameter box constraints used.
         uncertainty: The bootstrap draws.
         components: The estimated variance components.
+        log_x: Log-normalized predictors, one row per run. With ``weights``, enables the
+            ill-conditioning check; without them it is skipped.
+        weights: Fitting weights, one per run.
 
     Returns:
         A list of :class:`~simple_scaling_laws.notes.Note`.
@@ -265,6 +338,30 @@ def fit_notes(
                 {"target": target, "parameters": list(pinned)},
             )
         )
+
+    # With fewer observations than parameters there is nothing to measure: the design is already
+    # reported as underdetermined, which is the stronger statement.
+    if log_x is not None and weights is not None and log_x.shape[0] >= law.n_params:
+        number, loose = conditioning(law, fit.params, log_x, weights)
+        if number > ILL_CONDITIONING_THRESHOLD:
+            notes.append(
+                Note(
+                    "ill_conditioned_fit",
+                    "warning",
+                    f"The fitted parameters for {target!r} are not individually identified: "
+                    f"{list(loose)} can trade off against each other with almost no change in the "
+                    "fitted curve. Their values -- including an asymptote read off the offset -- are "
+                    "an accident of the optimizer's path and should not be interpreted. Predictions "
+                    "inside the observed domain are still supported. This usually means the law is "
+                    "richer than these data can distinguish; a simpler law will describe them "
+                    "equally well.",
+                    {
+                        "target": target,
+                        "parameters": list(loose),
+                        "condition_number": None if np.isinf(number) else number,
+                    },
+                )
+            )
 
     lower, upper = uncertainty.quantiles([0.025, 0.975])
     for i, (name, kind) in enumerate(zip(law.param_names, law.param_kinds, strict=True)):

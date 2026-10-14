@@ -218,7 +218,11 @@ def _fit_target(
         },
     )
     notes = list(uncertainty.notes)
-    notes.extend(diagnostics_mod.fit_notes(target, law, fit, bounds, uncertainty, components))
+    notes.extend(
+        diagnostics_mod.fit_notes(
+            target, law, fit, bounds, uncertainty, components, log_x=log_x, weights=weights
+        )
+    )
     return target_fit, uncertainty, notes
 
 
