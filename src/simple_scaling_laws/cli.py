@@ -24,6 +24,7 @@ import yaml
 from .api import fit as fit_model
 from .artifact import package_version
 from .compare import compare as compare_models
+from .cost import CostError, CostModel, cost_model, fit_cost_model
 from .laws import DEFAULT_LAW, available_laws
 from .model import DEFAULT_QUANTILES, PREDICTION_KINDS, ScalingLawModel
 from .uncertainty import DEFAULT_DRAWS
@@ -100,6 +101,36 @@ def parse_models(pairs: Sequence[str] | None) -> dict[str, str]:
     if len(out) < 2:
         raise CLIError(f"Comparing needs at least two --model arguments, got {len(out)}")
     return out
+
+
+def parse_cost(spec: str, records: str | None = None) -> CostModel:
+    """Build a cost model from ``FORM[:name=value,...]``, fitting any parameter not given to ``records``.
+
+    Examples:
+        >>> parse_cost("power:k=6,a=1,b=1").description
+        'power: k=6, a=1, b=1'
+        >>> parse_cost("power:k=6")
+        Traceback (most recent call last):
+        ...
+        simple_scaling_laws.cli.CLIError: Cost form 'power' needs ['a', 'b'] as well; to estimate them from
+        recorded runs, use fit_cost_model(..., form='power', fixed={...})
+    """
+    form, _, rest = spec.partition(":")
+    params: dict[str, float] = {}
+    for item in filter(None, (part.strip() for part in rest.split(","))):
+        name, sep, value = item.partition("=")
+        if not sep:
+            raise CLIError(f"Expected name=value in --cost, got {item!r}")
+        try:
+            params[name.strip()] = float(value)
+        except ValueError as exc:
+            raise CLIError(f"Cost parameter {name.strip()!r} is not a number: {value!r}") from exc
+    try:
+        if records is not None:
+            return fit_cost_model(records, form=form, fixed=params)
+        return cost_model(form, **params)
+    except CostError as exc:
+        raise CLIError(str(exc)) from exc
 
 
 def parse_quantiles(text: str) -> list[float]:
@@ -230,6 +261,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     predict_parser.add_argument("--seed", type=int, help="Random seed for new-run noise (advanced).")
 
+    allocate_parser = subparsers.add_parser(
+        "allocate", help="The best model and dataset size for each budget, from a fitted artifact."
+    )
+    allocate_parser.add_argument("artifact", help="A .slaw artifact directory.")
+    allocate_parser.add_argument("--budget", action="append", type=float, required=True, help="Repeatable.")
+    allocate_parser.add_argument(
+        "--cost",
+        required=True,
+        help="FORM[:name=value,...], e.g. power:k=6,a=1,b=1. Parameters left out are fit to --cost-records.",
+    )
+    allocate_parser.add_argument(
+        "--cost-records", help="Runs with a recorded compute__* column to fit the cost to."
+    )
+    allocate_parser.add_argument(
+        "--target", action="append", help="Target to optimize. Repeatable; default primary."
+    )
+    allocate_parser.add_argument(
+        "--quantiles", default=",".join(str(q) for q in DEFAULT_QUANTILES), help="Comma-separated quantiles."
+    )
+    allocate_parser.add_argument("--output", "-o", help="Destination .parquet or .csv (default: stdout CSV).")
+
     compare_parser = subparsers.add_parser(
         "compare", help="Compare two or more fitted systems at new scales."
     )
@@ -304,6 +356,24 @@ def _run_predict(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_allocate(args: argparse.Namespace) -> int:
+    """Execute the ``allocate`` subcommand."""
+    model = ScalingLawModel.load(args.artifact)
+    cost = parse_cost(args.cost, args.cost_records)
+    print(f"cost model: {cost.description}", file=sys.stderr)
+    for note in cost.notes:
+        print(f"warning: {note.message}", file=sys.stderr)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        frontier = model.optimal_allocation(
+            args.budget, cost, targets=args.target, quantiles=parse_quantiles(args.quantiles)
+        )
+    for warning in caught:
+        print(f"warning: {warning.message}", file=sys.stderr)
+    write_frame(frontier, args.output)
+    return 0
+
+
 def _run_compare(args: argparse.Namespace) -> int:
     """Execute the ``compare`` subcommand."""
     models = {name: ScalingLawModel.load(path) for name, path in parse_models(args.model).items()}
@@ -348,6 +418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     handlers = {
         "fit": _run_fit,
         "predict": _run_predict,
+        "allocate": _run_allocate,
         "compare": _run_compare,
         "inspect": _run_inspect,
     }

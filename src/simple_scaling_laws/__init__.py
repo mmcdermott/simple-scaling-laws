@@ -31,6 +31,7 @@ Examples:
 from .api import ConfigError, fit, load_config
 from .artifact import FORMAT_VERSION, ArtifactError, package_version
 from .compare import ComparisonError, compare
+from .cost import CostError, CostModel, available_cost_forms, cost_model, fit_cost_model
 from .data import DataError, build_dataset
 from .laws import LawError, available_laws
 from .metrics import MetricError
@@ -46,6 +47,8 @@ __all__ = [
     "ArtifactError",
     "ComparisonError",
     "ConfigError",
+    "CostError",
+    "CostModel",
     "DataError",
     "LawError",
     "MetricError",
@@ -55,11 +58,14 @@ __all__ = [
     "Schema",
     "SchemaError",
     "__version__",
+    "available_cost_forms",
     "available_laws",
     "build_dataset",
     "compare",
+    "cost_model",
     "discover_schema",
     "fit",
+    "fit_cost_model",
     "load",
     "load_config",
 ]

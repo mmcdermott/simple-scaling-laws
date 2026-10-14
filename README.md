@@ -689,6 +689,82 @@ test_metric__auroc: run-level r=-0.979 over 18 runs (evaluation-row r=-0.971 ove
 
 ```
 
+## Allocating a budget
+
+A fitted law says what loss a configuration reaches. Splitting a budget between model size and data
+needs a second model, of what each configuration *costs*. Cost laws come from a registry of named
+forms, just like scaling laws, each over one model-size predictor `N` and one dataset-size predictor
+`D`:
+
+```pycon
+>>> from simple_scaling_laws import available_cost_forms, cost_model, fit_cost_model
+>>> for name, description in available_cost_forms().items():
+...     print(f"{name}\n    {description}")
+power
+    k * N**a * D**b (e.g. k=6, a=b=1: training FLOPs of a transformer)
+per-example
+    D * (k * N**a + c) (per-example cost growing with N, plus a fixed overhead)
+
+```
+
+A cost model is either declared outright, or fitted to runs that recorded what they cost -- a
+`compute__*` column, one value per run -- with any parameters you already know held fixed:
+
+```pycon
+>>> chinchilla = cost_model("power", k=6.0, a=1.0, b=1.0)
+>>> costed = runs.with_columns(
+...     (6.0 * pl.col("model_size__n_params") * pl.col("dataset_size__n_subjects")).alias("compute__flops")
+... )
+>>> fitted_cost = fit_cost_model(costed, form="power", fixed={"b": 1.0})
+>>> fitted_cost.description, fitted_cost.fitted
+('power: k=6, a=1, b=1', ('k', 'a'))
+
+```
+
+Measured cost is better than a formula wherever you have it. `D` must be what each run *processed*
+-- tokens or examples seen, every epoch included -- and a run that stops early processes less than its
+schedule said. Logged compute captures that; a formula written in advance does not. In PyTorch,
+`torch.utils.flop_counter.FlopCounterMode` counts a forward and backward pass; multiplied by the
+examples processed, that is the run's cost. Counting one model is not enough to *declare* a cost law,
+because how cost grows with `N` depends on how the model is scaled up (wider or deeper, longer context,
+embeddings that cost nothing per example): record it for several sizes and fit.
+
+Given a cost model, `optimal_allocation` minimizes every bootstrap draw of the law along the curve of
+equal cost, so the optimal model size, dataset size and loss come with intervals:
+
+```pycon
+>>> frontier = model.optimal_allocation([1e11, 1e13], chinchilla)
+>>> for row in frontier.iter_rows(named=True):
+...     print(
+...         f"{row['budget']:.0e}: N* = {row['model_size__n_params__median']:.2g} "
+...         f"[{row['model_size__n_params__q025']:.2g}, {row['model_size__n_params__q975']:.2g}], "
+...         f"loss {row['test_loss__cross_entropy__median']:.3f}"
+...     )
+1e+11: N* = 1e+07 [9.8e+06, 1.1e+07], loss 5.346
+1e+13: N* = 8.2e+07 [7.7e+07, 8.8e+07], loss 3.330
+>>> exponents = model.allocation_exponents([1e11, 1e13], chinchilla)
+>>> round(exponents["model_size"]["median"], 2)  # N* grows as C**0.45 here
+0.45
+
+```
+
+Simulated 100 times at a hundred times the largest budget run, the 95% interval for `N*` covered the
+true optimum 97-98% of the time when the law was right. Two warnings matter here:
+
+- **`no_interior_optimum`**: a draw keeps improving all the way to the edge of the search, three
+    decades past the observed range. The law sets no limit on how much to spend on one resource, so
+    the optimum is not determined. `multiplicative-power`, monotone along any iso-cost curve, always
+    does this.
+- **`optimum_outside_observed_domain`**: the optimum is an extrapolation of the law's *shape*, even
+    when the budget itself was run. That is where a law that is only slightly wrong goes most wrong.
+
+The same is available from the command line:
+
+```bash
+scaling-laws allocate experiment.slaw --budget 1e18 --budget 1e19 --cost power:k=6,a=1,b=1
+scaling-laws allocate experiment.slaw --budget 1e18 --cost power:b=1 --cost-records runs.parquet
+```
+
 ## Prediction semantics
 
 | `kind`    | answers                                                              |

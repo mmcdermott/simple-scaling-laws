@@ -22,6 +22,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
     from pathlib import Path
 
+    from .cost import CostModel
+
 #: Prediction quantiles reported when the caller does not choose.
 DEFAULT_QUANTILES: tuple[float, ...] = (0.025, 0.5, 0.975)
 
@@ -387,6 +389,30 @@ class ScalingLawModel:
             )
             if kind in EXPONENT_KINDS
         }
+
+    def optimal_allocation(
+        self,
+        budgets: Sequence[float],
+        cost: CostModel,
+        targets: Sequence[str] | None = None,
+        quantiles: Sequence[float] = DEFAULT_QUANTILES,
+    ) -> pl.DataFrame:
+        """The best model and dataset size at each budget (see :mod:`.allocation`)."""
+        from .allocation import optimal_allocation
+
+        return optimal_allocation(self, budgets, cost, targets=targets, quantiles=quantiles)
+
+    def allocation_exponents(
+        self,
+        budgets: Sequence[float],
+        cost: CostModel,
+        target: str | None = None,
+        quantiles: Sequence[float] = DEFAULT_QUANTILES,
+    ) -> dict[str, dict[str, float]]:
+        """How fast the optimum grows with the budget (see :mod:`.allocation`)."""
+        from .allocation import allocation_exponents
+
+        return allocation_exponents(self, budgets, cost, target=target, quantiles=quantiles)
 
     def metric_correlations(self) -> pl.DataFrame:
         """Run-level associations between the primary target and every other target.

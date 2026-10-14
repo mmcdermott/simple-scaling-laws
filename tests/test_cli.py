@@ -323,3 +323,51 @@ def test_malformed_input_is_a_one_line_error_not_a_traceback(workspace, capsys, 
     code = main(["fit", str(workspace / "runs.parquet"), "--output", str(workspace / "x.slaw"), *extra])
     assert code == 1
     assert message in capsys.readouterr().err
+
+
+def test_allocate_reports_the_frontier_for_each_budget(workspace, capsys):
+    artifact = workspace / "fit.slaw"
+    assert (
+        main(["fit", str(workspace / "runs.parquet"), "-o", str(artifact), "--draws", "60", "--quiet"]) == 0
+    )
+    output = workspace / "frontier.csv"
+    arguments = [
+        "allocate",
+        str(artifact),
+        "--budget",
+        "1e12",
+        "--budget",
+        "1e13",
+        "--cost",
+        "power:k=6,a=1,b=1",
+    ]
+    assert main([*arguments, "-o", str(output)]) == 0
+    frontier = pl.read_csv(output)
+    assert frontier["budget"].to_list() == [1e12, 1e13]
+    assert "model_size__n_params__median" in frontier.columns
+    assert "cost model: power: k=6, a=1, b=1" in capsys.readouterr().err
+
+
+def test_allocate_fits_the_parameters_it_was_not_given(workspace, capsys):
+    runs = pl.read_parquet(workspace / "runs.parquet").with_columns(
+        (6.0 * pl.col("model_size__n_params") * pl.col("dataset_size__n_subjects")).alias("compute__flops")
+    )
+    runs.write_parquet(workspace / "costed.parquet")
+    artifact = workspace / "fit.slaw"
+    assert (
+        main(["fit", str(workspace / "runs.parquet"), "-o", str(artifact), "--draws", "60", "--quiet"]) == 0
+    )
+    code = main(
+        [
+            "allocate",
+            str(artifact),
+            "--budget",
+            "1e12",
+            "--cost",
+            "power:b=1",
+            "--cost-records",
+            str(workspace / "costed.parquet"),
+        ]
+    )
+    assert code == 0
+    assert "cost model: power: k=6, a=1, b=1" in capsys.readouterr().err
